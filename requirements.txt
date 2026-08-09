@@ -1,0 +1,15 @@
+httpx>=0.27.0
+python-dotenv>=1.0.0
+pydantic>=2.0
+
+langchain>=1.3
+langchain-core>=0.3
+langchain-openai>=0.2
+langgraph>=0.2
+
+fastapi>=0.115
+uvicorn>=0.30
+
+# 生产级 checkpoint（暂不强制，需用时自行取消注释并 pip install）
+# langgraph-checkpoint-postgres
+# asyncpg
