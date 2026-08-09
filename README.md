@@ -1,13 +1,14 @@
 # My-Agent
 
-基于 **LangGraph + FastAPI**  Agent
+基于 **LangGraph + FastAPI + Streamlit** 的多工具 Agent。
 
 ## 特性
 
 - 🔧 **工具可插拔**：新增工具只需在 `app/tools/` 下创建文件 + `registry.py` 注册
 - 🤖 **LangGraph 工作流**：单 Agent → 多 Agent Supervisor 平滑演进
 - 💾 **会话持久化**：MemorySaver（开发）/ PostgresSaver（生产）可切换
-- 🌐 **FastAPI 接口**：CLI、HTTP、流式三种调用方式
+- 🌐 **FastAPI 接口**：提供 `/chat` 和 `/health`
+- 🖥️ **Streamlit UI**：提供本地可视化聊天界面
 - 🔑 **环境变量管理**：.env 集中配置，支持 Pydantic 校验
 
 ## 目录结构
@@ -15,6 +16,7 @@
 ```
 my-agent/
 ├── run.py                     # 统一入口（CLI / API）
+├── streamlit_app.py           # Streamlit 聊天界面
 ├── requirements.txt           # 依赖（带版本下限）
 ├── .env                       # 环境变量（已 .gitignore）
 │
@@ -24,16 +26,22 @@ my-agent/
     │   ├── llm.py             # ChatOpenAI 单例
     │   └── checkpointer.py    # 工厂：MemorySaver / PostgresSaver
     │
+    ├── services/              # 业务服务层，供 CLI / API / UI 复用
+    │   └── chat_service.py    # chat() / health()
+    │
     ├── tools/                 # 所有工具
-    │   ├── registry.py        # 统一导出 all_tools
-    │   ├── weather.py         # get_weather（Open-Meteo）
-    │   ├── weather_codes.py   # Open-Meteo 天气码映射
-    │   └── typhoon.py         # get_typhoon（中央气象台）
+    │   ├── registry.py        # 按领域组合 all_tools / tool_groups
+    │   └── weather/
+    │       ├── current.py     # get_weather（Open-Meteo）
+    │       ├── typhoon.py     # get_typhoon（中央气象台）
+    │       ├── codes.py       # Open-Meteo 天气码映射
+    │       └── registry.py    # weather_tools
     │
     ├── graph/                 # LangGraph 层
     │   ├── state.py           # State TypedDict
     │   ├── prompts.py         # SYSTEM_PROMPT
     │   ├── nodes.py           # chatbot 节点 + Supervisor 扩展位
+    │   ├── router.py          # 未来领域路由 / Supervisor 预留
     │   └── builder.py         # build_graph() 组装工作流
     │
     ├── api/                   # FastAPI 层
@@ -77,7 +85,7 @@ cat .env
 | `API_HOST` | `0.0.0.0` | API 监听地址 |
 | `API_PORT` | `8000` | API 监听端口 |
 
-### 3. 三种跑法
+### 3. 四种跑法
 
 ```bash
 # CLI 单次对话
@@ -90,6 +98,9 @@ python run.py
 python run.py api
 # 或
 python run.py api --port 9001
+
+# Streamlit 聊天界面
+streamlit run streamlit_app.py
 ```
 
 ### 4. HTTP 调用
@@ -115,7 +126,7 @@ curl -X POST http://localhost:8000/chat \
 
 ### 方式 A：最小改动
 
-在 `app/tools/` 下新建 `my_tool.py`：
+简单工具可以直接在 `app/tools/` 下新建 `my_tool.py`：
 
 ```python
 from langchain_core.tools import tool
@@ -131,14 +142,15 @@ def my_tool(query: str) -> str:
 ```python
 from app.tools.my_tool import my_tool
 
-all_tools = [get_weather, get_typhoon, my_tool]
+my_tools = [my_tool]
+all_tools = [*weather_tools, *my_tools]
 ```
 
 改一下 `app/graph/prompts.py` 里的 SYSTEM_PROMPT，让模型知道有这个工具。完成。
 
 ### 方式 B：带外部数据源的工具
 
-参考 `app/tools/typhoon.py` 的结构——内部函数调数据源，`@tool` 函数做参数校验 + 结果格式化。数据源 HTTP 请求统一走 `app/utils/http.py` 的 `http_client()` 上下文管理器。
+参考 `app/tools/weather/typhoon.py` 的结构——内部函数调数据源，`@tool` 函数做参数校验 + 结果格式化。数据源 HTTP 请求统一走 `app/utils/http.py` 的 `http_client()` 上下文管理器。
 
 ## 架构演进
 
@@ -191,6 +203,7 @@ CMD ["python", "run.py", "api"]
 | Agent 编排 | LangGraph 0.2+ |
 | 工具定义 | LangChain Tool 协议 |
 | API | FastAPI + Uvicorn |
+| UI | Streamlit |
 | 会话持久化 | LangGraph Checkpoint（Memory / Postgres） |
 | 配置 | python-dotenv + pydantic |
 | HTTP | httpx |
@@ -201,7 +214,10 @@ CMD ["python", "run.py", "api"]
 - [x] 工具注册机制
 - [x] LangGraph 单 Agent + ToolNode
 - [x] FastAPI 层（/chat, /health）
+- [x] Streamlit 聊天界面
 - [x] Memory / Postgres Checkpointer 工厂
+- [x] Service 层复用 CLI / API / UI
+- [x] 工具按领域分组
 - [x] Supervisor 扩展位预留
 - [ ] Supervisor 多 Agent 实现（工具 > 15 或业务域差异大时）
 - [ ] Docker / docker-compose
