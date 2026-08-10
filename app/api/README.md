@@ -17,7 +17,7 @@ python run.py api
 # 浏览器打开 http://localhost:8000/docs
 ```
 
-全新数据库首次启动 API 时需要配置 `ADMIN_API_KEY`，用于自动创建初始管理员。
+全新数据库首次启动 API 时需要配置 `ADMIN_PASSWORD`，用于自动创建初始管理员。
 
 ## 接口列表
 
@@ -50,13 +50,57 @@ curl http://localhost:8000/health
 
 ---
 
-### 2. Agent 对话
+### 2. 用户登录
+
+```
+POST /auth/login
+```
+
+**描述**：使用用户名和密码登录，返回后续接口使用的 Bearer Token。
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `username` | string | ✅ | 用户名 |
+| `password` | string | ✅ | 密码 |
+
+**示例**：
+
+```bash
+curl -s -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "你的管理员密码"}'
+```
+
+**响应 200**：
+
+```json
+{
+  "access_token": "...",
+  "token_type": "bearer",
+  "expires_in": 86400,
+  "user": {
+    "id": "...",
+    "username": "admin",
+    "display_name": "Bootstrap Admin",
+    "role": "admin",
+    "is_active": true,
+    "created_at": "...",
+    "updated_at": "..."
+  }
+}
+```
+
+---
+
+### 3. Agent 对话
 
 ```
 POST /chat
 ```
 
-**描述**：向 Agent 发送一条消息，返回生成的回复。Agent 会根据问题内容自动决定是否调用工具（天气、台风等）。接口需要 `X-API-Key` 鉴权，聊天上下文和永久历史都会绑定到当前用户。
+**描述**：向 Agent 发送一条消息，返回生成的回复。Agent 会根据问题内容自动决定是否调用工具（天气、台风等）。接口需要 `Authorization: Bearer <token>` 鉴权，聊天上下文和永久历史都会绑定到当前用户。
 
 #### 请求体
 
@@ -79,13 +123,13 @@ POST /chat
 ```bash
 # 第一轮
 curl -s -X POST http://localhost:8000/chat \
-  -H "X-API-Key: 你的用户 API Key" \
+  -H "Authorization: Bearer 你的 access_token" \
   -H "Content-Type: application/json" \
   -d '{"message": "我叫小明"}'
 
 # 第二轮（带上一轮的 thread_id）
 curl -s -X POST http://localhost:8000/chat \
-  -H "X-API-Key: 你的用户 API Key" \
+  -H "Authorization: Bearer 你的 access_token" \
   -H "Content-Type: application/json" \
   -d '{"message": "我刚才说我叫什么？", "thread_id": "上一轮返回的 thread_id"}'
 ```
@@ -135,29 +179,29 @@ curl -s -X POST http://localhost:8000/chat \
 | 状态码 | 场景 |
 |---|---|
 | `422` | 请求体校验失败（message 为空、超长等） |
-| `401` | 缺少或无效的 `X-API-Key` |
+| `401` | 缺少、无效或过期的 Bearer Token |
 | `403` | 用户已禁用 |
 | `500` | LLM / 工具调用异常 |
 
 ---
 
-### 3. 聊天历史
+### 4. 聊天历史
 
 ```
 GET /chat/sessions
 GET /chat/sessions/{thread_id}/messages
 ```
 
-**描述**：查询当前用户的永久聊天历史。`/chat/sessions` 返回会话列表；`/chat/sessions/{thread_id}/messages` 返回某个会话下的用户消息、助手回复和工具调用信息。两个接口都需要 `X-API-Key`。
+**描述**：查询当前用户的永久聊天历史。`/chat/sessions` 返回会话列表；`/chat/sessions/{thread_id}/messages` 返回某个会话下的用户消息、助手回复和工具调用信息。两个接口都需要 `Authorization: Bearer <token>`。
 
 **示例**：
 
 ```bash
 curl http://localhost:8000/chat/sessions \
-  -H "X-API-Key: 你的用户 API Key"
+  -H "Authorization: Bearer 你的 access_token"
 
 curl http://localhost:8000/chat/sessions/上一轮返回的_thread_id/messages \
-  -H "X-API-Key: 你的用户 API Key"
+  -H "Authorization: Bearer 你的 access_token"
 ```
 
 ---

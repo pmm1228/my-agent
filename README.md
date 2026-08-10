@@ -9,7 +9,7 @@
 - 💾 **会话持久化**：MemorySaver（开发）/ AsyncPostgresSaver（生产）可切换
 - 🧾 **永久聊天历史**：业务表保存会话和消息，便于分页展示 / 审计
 - 🌐 **FastAPI 接口**：提供 `/chat` 和 `/health`
-- 🔐 **用户权限管理**：基于用户表 + `X-API-Key` 的管理员校验
+- 🔐 **用户权限管理**：用户名密码登录 + Bearer Token 鉴权
 - 🖥️ **Streamlit UI**：提供本地可视化聊天界面
 - 🔑 **环境变量管理**：.env 集中配置，支持 Pydantic 校验
 
@@ -30,7 +30,7 @@ my-agent/
     ├── core/                  # 基础设施（不依赖上层）
     │   ├── config.py          # get_settings() 集中校验 .env
     │   ├── database.py        # app_users 初始化 + 连接池
-    │   ├── security.py        # API Key 生成 / 哈希
+    │   ├── security.py        # 密码哈希 / Token / API Key 兼容
     │   ├── llm.py             # ChatOpenAI 单例
     │   └── checkpointer.py    # 工厂：MemorySaver / AsyncPostgresSaver
     │
@@ -56,7 +56,7 @@ my-agent/
     │
     ├── api/                   # FastAPI 层
     │   ├── main.py            # FastAPI app 工厂
-    │   ├── auth.py            # X-API-Key 管理员依赖
+    │   ├── auth.py            # Bearer Token 鉴权依赖
     │   ├── schemas.py         # 请求/响应模型
     │   └── routes.py          # handle_chat / handle_health / handle_create_user
     │
@@ -95,7 +95,10 @@ cat .env
 | `POSTGRES_URL` | — | PostgreSQL 连接串，启用 `postgres` checkpointer 时必填 |
 | `DATABASE_URL` | `POSTGRES_URL` | 用户权限表连接串；不配置时复用 `POSTGRES_URL` |
 | `ADMIN_USERNAME` | `admin` | 启动时自动创建/更新的管理员用户名 |
-| `ADMIN_API_KEY` | — | 管理员 API Key；配置后用于调用用户管理接口 |
+| `ADMIN_PASSWORD` | — | 管理员登录密码；全新数据库首次启动必填 |
+| `JWT_SECRET` | `ADMIN_API_KEY` 或本地默认值 | Bearer Token 签名密钥，生产环境请显式配置 |
+| `JWT_EXPIRE_MINUTES` | `1440` | 登录 Token 有效分钟数 |
+| `ADMIN_API_KEY` | — | 兼容旧 API Key 调用；用户名密码登录不依赖它 |
 | `API_HOST` | `0.0.0.0` | API 监听地址 |
 | `API_PORT` | `8000` | API 监听端口 |
 
@@ -105,7 +108,7 @@ cat .env
 > ```
 > 详见 [数据库](#数据库) 章节。
 >
-> 全新数据库首次启动 API 时必须配置 `ADMIN_API_KEY`，应用会自动创建管理员；已有活跃管理员时可不配置。
+> 全新数据库首次启动 API 时必须配置 `ADMIN_PASSWORD`，应用会自动创建可登录管理员。
 
 ### 3. 四种跑法
 
@@ -132,36 +135,42 @@ streamlit run streamlit_app.py
 curl http://localhost:8000/health
 # → {"status": "ok", "model": "deepseek-chat"}
 
+# 登录，拿到 access_token
+curl -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "你的管理员密码"}'
+# → {"access_token": "...", "token_type": "bearer", "expires_in": 86400, "user": {...}}
+
 # 对话
 curl -X POST http://localhost:8000/chat \
-  -H "X-API-Key: 你的用户 API Key" \
+  -H "Authorization: Bearer 你的 access_token" \
   -H "Content-Type: application/json" \
   -d '{"message": "查下深圳今天天气"}'
 # → {"reply": "...", "thread_id": "xxx", "tool_calls": [...], "history_saved": true}
 
 # 带 thread_id 保持会话
 curl -X POST http://localhost:8000/chat \
-  -H "X-API-Key: 你的用户 API Key" \
+  -H "Authorization: Bearer 你的 access_token" \
   -H "Content-Type: application/json" \
   -d '{"message": "那明天呢？", "thread_id": "上一次返回的 thread_id"}'
 
 # 查看当前用户聊天会话
 curl http://localhost:8000/chat/sessions \
-  -H "X-API-Key: 你的用户 API Key"
+  -H "Authorization: Bearer 你的 access_token"
 
 # 查看某个会话的聊天消息
 curl http://localhost:8000/chat/sessions/会话thread_id/messages \
-  -H "X-API-Key: 你的用户 API Key"
+  -H "Authorization: Bearer 你的 access_token"
 
-# 新增用户（需要管理员 API Key）
+# 新增用户（需要管理员权限）
 curl -X POST http://localhost:8000/users \
-  -H "X-API-Key: 你的管理员 API Key" \
+  -H "Authorization: Bearer 管理员 access_token" \
   -H "Content-Type: application/json" \
-  -d '{"username": "alice", "display_name": "Alice"}'
+  -d '{"username": "alice", "password": "alice12345", "display_name": "Alice"}'
 
-# 删除用户（需要管理员 API Key）
+# 删除用户（需要管理员权限）
 curl -X DELETE http://localhost:8000/users/用户ID \
-  -H "X-API-Key: 你的管理员 API Key"
+  -H "Authorization: Bearer 管理员 access_token"
 ```
 
 ## 如何添加新工具
@@ -281,7 +290,7 @@ volumes:
 | `checkpoint_blobs` | checkpoint 二进制数据 | 自动迁移 |
 | `checkpoint_writes` | checkpoint 写入记录（工具调用等） | 自动迁移 |
 | `checkpoint_migrations` | 迁移版本追踪 | 自动迁移 |
-| `app_users` | 用户与权限管理（用户名、角色、状态、API Key 哈希） | API 启动时自动初始化 |
+| `app_users` | 用户与权限管理（用户名、角色、状态、密码哈希、兼容 API Key 哈希） | API 启动时自动初始化 |
 | `chat_sessions` | 业务聊天会话（按 `user_id + thread_id` 唯一） | API 启动时自动初始化 |
 | `chat_messages` | 永久聊天消息（用户消息、助手回复、工具调用） | API 启动时自动初始化 |
 | `memory_entries` | 长期记忆验证表（含 `vector(1536)` 列，pgvector 语义检索） | `scripts/test_memory_pgvector.py` 自动初始化 |
@@ -292,7 +301,7 @@ volumes:
 
 `memory_entries` 是长期记忆 / RAG 的验证表，暂未接入聊天流程。它包含 `user_id` + `content` + `embedding`（pgvector 向量列），支持余弦距离做语义检索，**所有查询必须加 `WHERE user_id = ...`** 避免串用户。
 
-`app_users` 在 API 启动时创建。用户管理接口通过 `X-API-Key` 鉴权，数据库只保存 API Key 的哈希；新增用户或重置 Key 时，明文 Key 只会在响应中返回一次。删除用户会级联删除业务聊天历史，并清理该用户命名空间下的 LangGraph checkpoint。
+`app_users` 在 API 启动时创建。用户通过 `POST /auth/login` 使用用户名密码登录，后续接口使用 `Authorization: Bearer <token>`；数据库只保存密码哈希。兼容旧版 API Key 鉴权，新增用户或重置 Key 时，明文 Key 只会在响应中返回一次。删除用户会级联删除业务聊天历史，并清理该用户命名空间下的 LangGraph checkpoint。
 
 ### 验证脚本
 

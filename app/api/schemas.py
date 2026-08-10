@@ -56,6 +56,11 @@ class HealthResponse(BaseModel):
     model: str
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=64)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
 class UserCreateRequest(BaseModel):
     username: str = Field(
         ...,
@@ -63,6 +68,7 @@ class UserCreateRequest(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9_.-]+$",
     )
+    password: str = Field(..., min_length=8, max_length=128)
     display_name: str | None = Field(default=None, max_length=128)
     role: UserRole = "user"
     api_key: str | None = Field(
@@ -88,6 +94,13 @@ class UserCreateResponse(UserResponse):
     api_key: str
 
 
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: UserResponse
+
+
 class UserDeleteResponse(BaseModel):
     deleted: bool = True
     user: UserResponse
@@ -97,6 +110,7 @@ class UpdateUserRequest(BaseModel):
     role: UserRole | None = None
     is_active: bool | None = None
     display_name: str | None = Field(default=None, max_length=128)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
     reset_api_key: bool = False
 
 

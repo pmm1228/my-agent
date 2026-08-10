@@ -1,6 +1,8 @@
+import json
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from app.api.schemas import (
     ChatMessageListResponse,
@@ -9,6 +11,8 @@ from app.api.schemas import (
     ChatResponse,
     ChatSessionListResponse,
     ChatSessionResponse,
+    LoginRequest,
+    LoginResponse,
     UpdateUserRequest,
     UpdateUserResponse,
     UserCreateRequest,
@@ -17,7 +21,9 @@ from app.api.schemas import (
     UserListResponse,
     UserResponse,
 )
+from app.core.config import get_settings
 from app.core.database import DatabaseNotConfigured
+from app.core.security import create_access_token
 from app.services.chat_history_service import (
     ChatMessageRecord,
     ChatSessionRecord,
@@ -26,12 +32,13 @@ from app.services.chat_history_service import (
     list_chat_sessions,
     record_chat_exchange,
 )
-from app.services.chat_service import chat, health
+from app.services.chat_service import chat, health, stream_chat
 from app.services.user_service import (
     CannotDeleteLastAdmin,
     UserAlreadyExists,
     UserNotFound,
     UserRecord,
+    authenticate_user,
     count_users,
     create_user,
     delete_user,
@@ -107,8 +114,95 @@ async def handle_chat(req: ChatRequest, *, user: UserRecord) -> ChatResponse:
     )
 
 
+async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> StreamingResponse:
+    async def generate():
+        try:
+            async for event in stream_chat(
+                req.message,
+                thread_id=req.thread_id,
+                system=req.system,
+                user_id=str(user.id),
+            ):
+                if event.type == "token":
+                    yield json.dumps({"type": "token", "content": event.content}, ensure_ascii=False) + "\n"
+                    continue
+
+                result = event.result
+                if result is None:
+                    continue
+
+                history_saved = True
+                try:
+                    await record_chat_exchange(
+                        user_id=user.id,
+                        thread_id=result.thread_id,
+                        user_message=req.message,
+                        assistant_reply=result.reply,
+                        tool_calls=result.tool_calls,
+                    )
+                except Exception:
+                    history_saved = False
+                    logger.exception("聊天历史保存失败：user_id=%s thread_id=%s", user.id, result.thread_id)
+
+                yield json.dumps(
+                    {
+                        "type": "done",
+                        "reply": result.reply,
+                        "thread_id": result.thread_id,
+                        "tool_calls": result.tool_calls,
+                        "history_saved": history_saved,
+                    },
+                    ensure_ascii=False,
+                ) + "\n"
+        except Exception:
+            logger.exception("流式聊天失败：user_id=%s", user.id)
+            yield json.dumps({"type": "error", "message": "生成回复失败，请稍后重试"}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
 async def handle_health() -> dict:
     return await health()
+
+
+async def handle_login(req: LoginRequest) -> LoginResponse:
+    try:
+        user = await authenticate_user(req.username.strip(), req.password)
+    except DatabaseNotConfigured as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="数据库未配置，无法登录",
+        ) from e
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="用户已禁用",
+        )
+
+    settings = get_settings()
+    expires_in = max(settings.JWT_EXPIRE_MINUTES, 1) * 60
+    access_token = create_access_token(
+        subject=str(user.id),
+        secret=settings.JWT_SECRET,
+        expires_in_seconds=expires_in,
+        extra={
+            "username": user.username,
+            "role": user.role,
+        },
+    )
+
+    return LoginResponse(
+        access_token=access_token,
+        expires_in=expires_in,
+        user=_to_user_response(user),
+    )
 
 
 async def handle_list_chat_sessions(
@@ -173,6 +267,7 @@ async def handle_create_user(req: UserCreateRequest) -> UserCreateResponse:
     try:
         created = await create_user(
             username=req.username,
+            password=req.password,
             role=req.role,
             display_name=req.display_name,
             api_key=req.api_key,
@@ -261,6 +356,7 @@ async def handle_update_user(user_id: UUID, req: UpdateUserRequest) -> UpdateUse
             is_active=req.is_active,
             display_name=req.display_name,
             update_display_name="display_name" in req.model_fields_set,
+            password=req.password,
             reset_api_key=req.reset_api_key,
         )
     except CannotDeleteLastAdmin as e:

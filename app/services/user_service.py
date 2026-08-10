@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 
 from app.core.database import DatabaseNotConfigured, db_connection
-from app.core.security import generate_api_key, hash_api_key
+from app.core.security import generate_api_key, hash_api_key, hash_password, verify_password
 
 
 UserRole = Literal["admin", "user"]
@@ -86,6 +86,7 @@ async def _lock_user_admin_guard(conn) -> None:
 async def create_user(
     *,
     username: str,
+    password: str,
     role: UserRole = "user",
     display_name: str | None = None,
     api_key: str | None = None,
@@ -103,10 +104,11 @@ async def create_user(
                         username,
                         display_name,
                         api_key_hash,
+                        password_hash,
                         role,
                         is_active
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     RETURNING
                         id,
                         username,
@@ -121,6 +123,7 @@ async def create_user(
                         username,
                         display_name,
                         hash_api_key(raw_api_key),
+                        hash_password(password),
                         role,
                         is_active,
                     ),
@@ -135,6 +138,36 @@ async def create_user(
         raise
 
     return CreatedUser(user=_row_to_user(row), api_key=raw_api_key)
+
+
+async def authenticate_user(username: str, password: str) -> UserRecord | None:
+    async with db_connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT
+                id,
+                username,
+                display_name,
+                role,
+                is_active,
+                created_at,
+                updated_at,
+                password_hash
+            FROM app_users
+            WHERE username = %s
+            LIMIT 1
+            """,
+            (username,),
+        )
+        row = await cur.fetchone()
+
+    if row is None:
+        return None
+
+    if not verify_password(password, row["password_hash"]):
+        return None
+
+    return _row_to_user(row)
 
 
 async def delete_user(user_id: uuid.UUID) -> UserRecord:
@@ -296,6 +329,7 @@ async def update_user(
     is_active: bool | None = None,
     display_name: str | None = None,
     update_display_name: bool = False,
+    password: str | None = None,
     reset_api_key: bool = False,
 ) -> UpdatedUser:
     async with db_connection() as conn:
@@ -357,6 +391,9 @@ async def update_user(
             if update_display_name:
                 updates.append("display_name = %s")
                 params.append(display_name)
+            if password is not None:
+                updates.append("password_hash = %s")
+                params.append(hash_password(password))
 
             new_key: str | None = None
             if reset_api_key:

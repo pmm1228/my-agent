@@ -2,10 +2,12 @@ from contextlib import asynccontextmanager
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import require_admin_user, require_user
 from app.api.routes import (
     handle_chat,
+    handle_chat_stream,
     handle_create_user,
     handle_delete_user,
     handle_get_me,
@@ -14,6 +16,7 @@ from app.api.routes import (
     handle_list_chat_messages,
     handle_list_chat_sessions,
     handle_list_users,
+    handle_login,
     handle_update_user,
 )
 from app.api.schemas import (
@@ -22,6 +25,8 @@ from app.api.schemas import (
     ChatResponse,
     ChatSessionListResponse,
     HealthResponse,
+    LoginRequest,
+    LoginResponse,
     UpdateUserRequest,
     UpdateUserResponse,
     UserCreateRequest,
@@ -63,10 +68,18 @@ def create_app() -> FastAPI:
         传入之前的 `thread_id` 则延续上下文。
         """,
         openapi_tags=[
+            {"name": "auth", "description": "登录与身份认证接口"},
             {"name": "chat", "description": "Agent 对话接口"},
             {"name": "users", "description": "用户与权限管理接口"},
             {"name": "system", "description": "系统管理接口"},
         ],
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     @app.get(
@@ -80,13 +93,23 @@ def create_app() -> FastAPI:
         return await handle_health()
 
     @app.post(
+        "/auth/login",
+        tags=["auth"],
+        summary="用户名密码登录",
+        description="校验用户名和密码，返回后续接口使用的 Bearer Token。",
+        response_model=LoginResponse,
+    )
+    async def login(req: LoginRequest) -> LoginResponse:
+        return await handle_login(req)
+
+    @app.post(
         "/chat",
         tags=["chat"],
         summary="Agent 对话",
         description=(
             "向 Agent 发送一条消息，返回生成的回复。"
             "当问题需要实时数据（天气、台风等）时，Agent 会自动调用注册的工具。"
-            "需要有效的 X-API-Key 鉴权。"
+            "需要有效的 Authorization Bearer Token。"
         ),
         response_model=ChatResponse,
     )
@@ -96,11 +119,23 @@ def create_app() -> FastAPI:
     ) -> ChatResponse:
         return await handle_chat(req, user=user)
 
+    @app.post(
+        "/chat/stream",
+        tags=["chat"],
+        summary="Agent 流式对话",
+        description="以 NDJSON 持续返回模型输出；最后一条 done 事件包含会话 ID。",
+    )
+    async def stream_chat_response(
+        req: ChatRequest,
+        user: UserRecord = Depends(require_user),
+    ):
+        return await handle_chat_stream(req, user=user)
+
     @app.get(
         "/chat/sessions",
         tags=["chat"],
         summary="列出聊天会话",
-        description="分页返回当前用户的聊天会话。需要有效的 X-API-Key。",
+        description="分页返回当前用户的聊天会话。需要有效的 Authorization Bearer Token。",
         response_model=ChatSessionListResponse,
     )
     async def list_chat_sessions(
@@ -138,7 +173,7 @@ def create_app() -> FastAPI:
         "/users",
         tags=["users"],
         summary="新增用户",
-        description="创建一个新用户，返回一次性的明文 API Key。该接口需要管理员权限。",
+        description="创建一个新用户。该接口需要管理员权限。",
         response_model=UserCreateResponse,
         status_code=201,
         dependencies=[Depends(require_admin_user)],
@@ -161,7 +196,7 @@ def create_app() -> FastAPI:
         "/me",
         tags=["users"],
         summary="获取当前用户",
-        description="返回当前 API Key 对应的用户信息。需要有效的 X-API-Key。",
+        description="返回当前 Bearer Token 对应的用户信息。",
         response_model=UserResponse,
     )
     async def me(user: UserRecord = Depends(require_user)) -> UserResponse:
@@ -197,7 +232,7 @@ def create_app() -> FastAPI:
         tags=["users"],
         summary="更新用户",
         description=(
-            "更新用户的角色、禁用状态、显示名。"
+            "更新用户的角色、禁用状态、显示名、密码。"
             "设置 reset_api_key=true 可重置 API Key（新 key 仅在响应中返回一次）。"
             "该接口需要管理员权限。"
         ),

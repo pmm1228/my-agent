@@ -28,6 +28,12 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", os.getenv("POSTGRES_URL", ""))
     ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
     ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")
+    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "")
+    JWT_SECRET: str = os.getenv(
+        "JWT_SECRET",
+        os.getenv("ADMIN_API_KEY", "my-agent-local-jwt-secret"),
+    )
+    JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
 
     # ---- HTTP ----
     HTTP_TIMEOUT: int = int(os.getenv("HTTP_TIMEOUT", "15"))

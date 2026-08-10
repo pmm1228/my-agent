@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from app.core.config import get_settings
-from app.core.security import hash_api_key
+from app.core.security import generate_api_key, hash_api_key, hash_password
 from app.utils.logging import get_logger
 
 
@@ -77,12 +77,19 @@ async def init_database() -> bool:
                 username text NOT NULL UNIQUE,
                 display_name text,
                 api_key_hash text NOT NULL UNIQUE,
+                password_hash text,
                 role text NOT NULL DEFAULT 'user',
                 is_active boolean NOT NULL DEFAULT true,
                 created_at timestamptz NOT NULL DEFAULT now(),
                 updated_at timestamptz NOT NULL DEFAULT now(),
                 CONSTRAINT app_users_role_check CHECK (role IN ('admin', 'user'))
             )
+            """
+        )
+        await conn.execute(
+            """
+            ALTER TABLE app_users
+            ADD COLUMN IF NOT EXISTS password_hash text
             """
         )
         await conn.execute(
@@ -148,26 +155,29 @@ async def close_database() -> None:
 
 async def _bootstrap_admin(conn) -> None:
     settings = get_settings()
-    api_key = settings.ADMIN_API_KEY.strip()
-    if not api_key:
+    admin_password = settings.ADMIN_PASSWORD
+    if not admin_password.strip():
         cur = await conn.execute(
             """
             SELECT COUNT(*) AS count
             FROM app_users
-            WHERE role = 'admin' AND is_active = true
+            WHERE role = 'admin'
+                AND is_active = true
+                AND password_hash IS NOT NULL
             """
         )
         admin_count = (await cur.fetchone())["count"]
         if admin_count:
-            logger.info("ADMIN_API_KEY 未配置，保留已有活跃管理员账号")
+            logger.info("ADMIN_PASSWORD 未配置，保留已有可登录管理员账号")
         else:
             raise RuntimeError(
-                "ADMIN_API_KEY 未配置，且数据库中没有活跃管理员。"
-                "请先在 .env 中设置 ADMIN_API_KEY 后再启动 API。"
+                "ADMIN_PASSWORD 未配置，且数据库中没有可登录管理员。"
+                "请先在 .env 中设置 ADMIN_PASSWORD 后再启动 API。"
             )
         return
 
     username = settings.ADMIN_USERNAME.strip() or "admin"
+    api_key = settings.ADMIN_API_KEY.strip() or generate_api_key()
     await conn.execute(
         """
         INSERT INTO app_users (
@@ -175,12 +185,17 @@ async def _bootstrap_admin(conn) -> None:
             username,
             display_name,
             api_key_hash,
+            password_hash,
             role,
             is_active
         )
-        VALUES (%s, %s, %s, %s, 'admin', true)
+        VALUES (%s, %s, %s, %s, %s, 'admin', true)
         ON CONFLICT (username) DO UPDATE SET
-            api_key_hash = EXCLUDED.api_key_hash,
+            api_key_hash = CASE
+                WHEN %s THEN EXCLUDED.api_key_hash
+                ELSE app_users.api_key_hash
+            END,
+            password_hash = EXCLUDED.password_hash,
             role = 'admin',
             is_active = true,
             updated_at = now()
@@ -190,5 +205,7 @@ async def _bootstrap_admin(conn) -> None:
             username,
             "Bootstrap Admin",
             hash_api_key(api_key),
+            hash_password(admin_password),
+            bool(settings.ADMIN_API_KEY.strip()),
         ),
     )
