@@ -2,11 +2,17 @@ import asyncio
 
 import streamlit as st
 
-from app.services.chat_service import chat
+from app.services.chat_service import chat, close_resources
 
 
 def _run_chat(message: str):
-    return asyncio.run(chat(message, thread_id=st.session_state.thread_id))
+    async def _chat():
+        try:
+            return await chat(message, thread_id=st.session_state.thread_id)
+        finally:
+            await close_resources()
+
+    return asyncio.run(_chat())
 
 
 st.set_page_config(page_title="My-Agent", page_icon="🌦️")

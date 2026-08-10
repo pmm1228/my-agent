@@ -153,19 +153,19 @@ thread_id 作用域：整个请求-响应周期
 | 配置 | 后端 | 适用场景 |
 |---|---|---|
 | `CHECKPOINTER_TYPE=memory` | MemorySaver | 开发 / 单进程测试，重启即丢 |
-| `CHECKPOINTER_TYPE=postgres` | PostgresSaver | **生产级**，持久化到 PostgreSQL |
+| `CHECKPOINTER_TYPE=postgres` | AsyncPostgresSaver | **生产级**，持久化到 PostgreSQL |
 
 生产切换步骤：
 
 ```bash
-pip install langgraph-checkpoint-postgres asyncpg
+pip install langgraph-checkpoint-postgres psycopg[binary] psycopg_pool
 
 # .env
 CHECKPOINTER_TYPE=postgres
 POSTGRES_URL=postgresql://user:pass@host:5432/myagent
 ```
 
-PostgresSaver 首次启动时自动建表（`checkpoints`、`blobs`、`writes`）。
+AsyncPostgresSaver 首次启动时自动建表（`checkpoints`、`checkpoint_blobs`、`checkpoint_writes`、`checkpoint_migrations`）。
 
 ---
 

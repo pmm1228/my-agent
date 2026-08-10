@@ -11,6 +11,10 @@ fastapi>=0.115
 uvicorn>=0.30
 streamlit>=1.40
 
-# 生产级 checkpoint（暂不强制，需用时自行取消注释并 pip install）
-# langgraph-checkpoint-postgres
-# asyncpg
+# 生产级 checkpoint
+langgraph-checkpoint-postgres
+psycopg[binary]
+psycopg_pool
+
+# 本地 pgvector 验证脚本
+numpy

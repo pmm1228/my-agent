@@ -57,6 +57,12 @@ async def chat(
     return ChatResult(reply=reply, thread_id=thread_id, tool_calls=tool_calls)
 
 
+async def close_resources() -> None:
+    close = getattr(graph.checkpointer, "aclose", None)
+    if close is not None:
+        await close()
+
+
 async def health() -> dict:
     settings = get_settings()
     return {"status": "ok", "model": settings.DEEPSEEK_MODEL}

@@ -1,20 +1,32 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.api.routes import handle_chat, handle_health
 from app.api.schemas import ChatRequest, ChatResponse, HealthResponse
+from app.services.chat_service import close_resources
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        yield
+    finally:
+        await close_resources()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="My-Agent API",
         version="0.1.0",
+        lifespan=lifespan,
         description="""
         基于 LangGraph 的可扩展 AI Agent 服务。
 
         ## 核心能力
         - 🤖 **智能对话**：支持多轮会话、工具自动调用
         - 🌐 **实时工具**：天气查询、台风追踪等可扩展工具集
-        - 💾 **会话持久化**：MemorySaver（默认）/ PostgresSaver（生产）
+        - 💾 **会话持久化**：MemorySaver（默认）/ AsyncPostgresSaver（生产）
 
         ## 会话机制
         不传 `thread_id` 自动创建新会话并返回；

@@ -13,15 +13,21 @@ import sys
 
 
 def run_once(question: str):
-    from app.services.chat_service import chat
+    from app.services.chat_service import chat, close_resources
 
-    reply = asyncio.run(chat(question))
+    async def _run():
+        try:
+            return await chat(question)
+        finally:
+            await close_resources()
+
+    reply = asyncio.run(_run())
     print(reply.reply)
 
 
 def run_repl():
     print("My-Agent 已启动，输入 q 退出")
-    from app.services.chat_service import chat
+    from app.services.chat_service import chat, close_resources
 
     thread_id = None
     while True:
@@ -35,7 +41,13 @@ def run_repl():
         if user.lower() in ("q", "quit", "exit"):
             break
 
-        reply = asyncio.run(chat(user, thread_id=thread_id))
+        async def _run():
+            try:
+                return await chat(user, thread_id=thread_id)
+            finally:
+                await close_resources()
+
+        reply = asyncio.run(_run())
         thread_id = reply.thread_id
         print(f"Bot: {reply.reply}")
 
