@@ -7,7 +7,9 @@
 - 🔧 **工具可插拔**：新增工具只需在 `app/tools/` 下创建文件 + `registry.py` 注册
 - 🤖 **LangGraph 工作流**：单 Agent → 多 Agent Supervisor 平滑演进
 - 💾 **会话持久化**：MemorySaver（开发）/ AsyncPostgresSaver（生产）可切换
+- 🧾 **永久聊天历史**：业务表保存会话和消息，便于分页展示 / 审计
 - 🌐 **FastAPI 接口**：提供 `/chat` 和 `/health`
+- 🔐 **用户权限管理**：基于用户表 + `X-API-Key` 的管理员校验
 - 🖥️ **Streamlit UI**：提供本地可视化聊天界面
 - 🔑 **环境变量管理**：.env 集中配置，支持 Pydantic 校验
 
@@ -27,11 +29,15 @@ my-agent/
 └── app/
     ├── core/                  # 基础设施（不依赖上层）
     │   ├── config.py          # get_settings() 集中校验 .env
+    │   ├── database.py        # app_users 初始化 + 连接池
+    │   ├── security.py        # API Key 生成 / 哈希
     │   ├── llm.py             # ChatOpenAI 单例
     │   └── checkpointer.py    # 工厂：MemorySaver / AsyncPostgresSaver
     │
     ├── services/              # 业务服务层，供 CLI / API / UI 复用
-    │   └── chat_service.py    # chat() / health()
+    │   ├── chat_service.py    # chat() / health()
+    │   ├── chat_history_service.py # 聊天会话 / 消息历史
+    │   └── user_service.py    # 用户新增 / 删除 / 权限查询
     │
     ├── tools/                 # 所有工具
     │   ├── registry.py        # 按领域组合 all_tools / tool_groups
@@ -50,8 +56,9 @@ my-agent/
     │
     ├── api/                   # FastAPI 层
     │   ├── main.py            # FastAPI app 工厂
+    │   ├── auth.py            # X-API-Key 管理员依赖
     │   ├── schemas.py         # 请求/响应模型
-    │   └── routes.py          # handle_chat / handle_health
+    │   └── routes.py          # handle_chat / handle_health / handle_create_user
     │
     └── utils/
         ├── http.py             # httpx.Client 单例
@@ -86,6 +93,9 @@ cat .env
 | `DEEPSEEK_API_BASE` | `https://api.deepseek.com/v1` | API 兼容端点 |
 | `CHECKPOINTER_TYPE` | `memory` | `memory`（进程内）或 `postgres`（持久化到 PostgreSQL） |
 | `POSTGRES_URL` | — | PostgreSQL 连接串，启用 `postgres` checkpointer 时必填 |
+| `DATABASE_URL` | `POSTGRES_URL` | 用户权限表连接串；不配置时复用 `POSTGRES_URL` |
+| `ADMIN_USERNAME` | `admin` | 启动时自动创建/更新的管理员用户名 |
+| `ADMIN_API_KEY` | — | 管理员 API Key；配置后用于调用用户管理接口 |
 | `API_HOST` | `0.0.0.0` | API 监听地址 |
 | `API_PORT` | `8000` | API 监听端口 |
 
@@ -94,6 +104,8 @@ cat .env
 > docker compose up -d
 > ```
 > 详见 [数据库](#数据库) 章节。
+>
+> 全新数据库首次启动 API 时必须配置 `ADMIN_API_KEY`，应用会自动创建管理员；已有活跃管理员时可不配置。
 
 ### 3. 四种跑法
 
@@ -122,14 +134,34 @@ curl http://localhost:8000/health
 
 # 对话
 curl -X POST http://localhost:8000/chat \
+  -H "X-API-Key: 你的用户 API Key" \
   -H "Content-Type: application/json" \
   -d '{"message": "查下深圳今天天气"}'
-# → {"reply": "...", "thread_id": "xxx", "tool_calls": [...]}
+# → {"reply": "...", "thread_id": "xxx", "tool_calls": [...], "history_saved": true}
 
 # 带 thread_id 保持会话
 curl -X POST http://localhost:8000/chat \
+  -H "X-API-Key: 你的用户 API Key" \
   -H "Content-Type: application/json" \
   -d '{"message": "那明天呢？", "thread_id": "上一次返回的 thread_id"}'
+
+# 查看当前用户聊天会话
+curl http://localhost:8000/chat/sessions \
+  -H "X-API-Key: 你的用户 API Key"
+
+# 查看某个会话的聊天消息
+curl http://localhost:8000/chat/sessions/会话thread_id/messages \
+  -H "X-API-Key: 你的用户 API Key"
+
+# 新增用户（需要管理员 API Key）
+curl -X POST http://localhost:8000/users \
+  -H "X-API-Key: 你的管理员 API Key" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "display_name": "Alice"}'
+
+# 删除用户（需要管理员 API Key）
+curl -X DELETE http://localhost:8000/users/用户ID \
+  -H "X-API-Key: 你的管理员 API Key"
 ```
 
 ## 如何添加新工具
@@ -249,9 +281,18 @@ volumes:
 | `checkpoint_blobs` | checkpoint 二进制数据 | 自动迁移 |
 | `checkpoint_writes` | checkpoint 写入记录（工具调用等） | 自动迁移 |
 | `checkpoint_migrations` | 迁移版本追踪 | 自动迁移 |
+| `app_users` | 用户与权限管理（用户名、角色、状态、API Key 哈希） | API 启动时自动初始化 |
+| `chat_sessions` | 业务聊天会话（按 `user_id + thread_id` 唯一） | API 启动时自动初始化 |
+| `chat_messages` | 永久聊天消息（用户消息、助手回复、工具调用） | API 启动时自动初始化 |
 | `memory_entries` | 长期记忆验证表（含 `vector(1536)` 列，pgvector 语义检索） | `scripts/test_memory_pgvector.py` 自动初始化 |
 
-`checkpoints` 每次对话自动写入，按 `thread_id` 隔离，进程重启后用同一个 thread_id 可续上对话。当前主应用只读写 checkpoint；`memory_entries` 是长期记忆 / RAG 的验证表，暂未接入聊天流程。它包含 `user_id` + `content` + `embedding`（pgvector 向量列），支持余弦距离做语义检索，**所有查询必须加 `WHERE user_id = ...`** 避免串用户。
+`checkpoints` 每次对话自动写入，负责 LangGraph 上下文恢复；API `/chat` 会把真实 checkpoint id 命名为 `user:{user_id}:thread:{thread_id}`，避免不同用户复用同一个 `thread_id` 时串上下文。
+
+`chat_sessions` 和 `chat_messages` 是业务聊天历史表，负责永久保存和分页查询。`POST /chat` 成功后会写入当前用户的会话、用户消息、助手回复和工具调用信息；若历史补写失败，接口仍返回本次回复并标记 `history_saved=false`。
+
+`memory_entries` 是长期记忆 / RAG 的验证表，暂未接入聊天流程。它包含 `user_id` + `content` + `embedding`（pgvector 向量列），支持余弦距离做语义检索，**所有查询必须加 `WHERE user_id = ...`** 避免串用户。
+
+`app_users` 在 API 启动时创建。用户管理接口通过 `X-API-Key` 鉴权，数据库只保存 API Key 的哈希；新增用户或重置 Key 时，明文 Key 只会在响应中返回一次。删除用户会级联删除业务聊天历史，并清理该用户命名空间下的 LangGraph checkpoint。
 
 ### 验证脚本
 

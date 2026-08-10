@@ -39,9 +39,14 @@ async def chat(
     *,
     thread_id: str | None = None,
     system: str | None = None,
+    user_id: str | None = None,
 ) -> ChatResult:
     thread_id = thread_id or str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
+    checkpoint_thread_id = f"user:{user_id}:thread:{thread_id}" if user_id else thread_id
+    configurable: dict = {"thread_id": checkpoint_thread_id}
+    if user_id:
+        configurable["user_id"] = user_id
+    config = {"configurable": configurable}
     has_history, previous_message_count = await _get_thread_history(config)
 
     messages = []

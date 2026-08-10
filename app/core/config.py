@@ -24,6 +24,11 @@ class Settings:
     )
     POSTGRES_URL: str = os.getenv("POSTGRES_URL", "")
 
+    # ---- Database / Auth ----
+    DATABASE_URL: str = os.getenv("DATABASE_URL", os.getenv("POSTGRES_URL", ""))
+    ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
+    ADMIN_API_KEY: str = os.getenv("ADMIN_API_KEY", "")
+
     # ---- HTTP ----
     HTTP_TIMEOUT: int = int(os.getenv("HTTP_TIMEOUT", "15"))
 

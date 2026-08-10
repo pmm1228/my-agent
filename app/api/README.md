@@ -17,6 +17,8 @@ python run.py api
 # 浏览器打开 http://localhost:8000/docs
 ```
 
+全新数据库首次启动 API 时需要配置 `ADMIN_API_KEY`，用于自动创建初始管理员。
+
 ## 接口列表
 
 ### 1. 健康检查
@@ -54,7 +56,7 @@ curl http://localhost:8000/health
 POST /chat
 ```
 
-**描述**：向 Agent 发送一条消息，返回生成的回复。Agent 会根据问题内容自动决定是否调用工具（天气、台风等）。
+**描述**：向 Agent 发送一条消息，返回生成的回复。Agent 会根据问题内容自动决定是否调用工具（天气、台风等）。接口需要 `X-API-Key` 鉴权，聊天上下文和永久历史都会绑定到当前用户。
 
 #### 请求体
 
@@ -77,11 +79,13 @@ POST /chat
 ```bash
 # 第一轮
 curl -s -X POST http://localhost:8000/chat \
+  -H "X-API-Key: 你的用户 API Key" \
   -H "Content-Type: application/json" \
   -d '{"message": "我叫小明"}'
 
 # 第二轮（带上一轮的 thread_id）
 curl -s -X POST http://localhost:8000/chat \
+  -H "X-API-Key: 你的用户 API Key" \
   -H "Content-Type: application/json" \
   -d '{"message": "我刚才说我叫什么？", "thread_id": "上一轮返回的 thread_id"}'
 ```
@@ -93,6 +97,7 @@ curl -s -X POST http://localhost:8000/chat \
 | `reply` | string | Agent 最终回复文本 |
 | `thread_id` | string | 本次会话 ID（用于后续多轮对话） |
 | `tool_calls` | array | 本次调用的工具列表（可能为空） |
+| `history_saved` | boolean | 聊天业务历史是否成功保存 |
 
 **tool_calls 元素**：
 
@@ -107,6 +112,7 @@ curl -s -X POST http://localhost:8000/chat \
 {
   "reply": "深圳今天多云，气温 26-32°C，降水概率较低。",
   "thread_id": "7a5d613e193a...",
+  "history_saved": true,
   "tool_calls": [
     {"name": "get_weather", "args": {"city": "深圳"}}
   ]
@@ -119,6 +125,7 @@ curl -s -X POST http://localhost:8000/chat \
 {
   "reply": "你好！有什么可以帮你的吗？",
   "thread_id": "99e3c1d4252...",
+  "history_saved": true,
   "tool_calls": []
 }
 ```
@@ -128,7 +135,30 @@ curl -s -X POST http://localhost:8000/chat \
 | 状态码 | 场景 |
 |---|---|
 | `422` | 请求体校验失败（message 为空、超长等） |
+| `401` | 缺少或无效的 `X-API-Key` |
+| `403` | 用户已禁用 |
 | `500` | LLM / 工具调用异常 |
+
+---
+
+### 3. 聊天历史
+
+```
+GET /chat/sessions
+GET /chat/sessions/{thread_id}/messages
+```
+
+**描述**：查询当前用户的永久聊天历史。`/chat/sessions` 返回会话列表；`/chat/sessions/{thread_id}/messages` 返回某个会话下的用户消息、助手回复和工具调用信息。两个接口都需要 `X-API-Key`。
+
+**示例**：
+
+```bash
+curl http://localhost:8000/chat/sessions \
+  -H "X-API-Key: 你的用户 API Key"
+
+curl http://localhost:8000/chat/sessions/上一轮返回的_thread_id/messages \
+  -H "X-API-Key: 你的用户 API Key"
+```
 
 ---
 
@@ -144,7 +174,14 @@ thread_id 作用域：整个请求-响应周期
 第二次请求（传同一个 thread_id）→ Checkpointer 恢复历史 messages → Agent 看到完整上下文
 ```
 
-切换 `thread_id` 即切换会话，天然支持多用户并发。
+API 会把真实 checkpoint id 命名为 `user:{user_id}:thread:{thread_id}`。切换 `thread_id` 即切换当前用户的会话；不同用户即使传入相同 `thread_id`，也不会共享上下文。
+
+永久聊天历史单独写入业务表：
+
+| 表 | 用途 |
+|---|---|
+| `chat_sessions` | 当前用户的会话元信息，按 `user_id + thread_id` 唯一 |
+| `chat_messages` | 用户消息、助手回复、工具调用，按会话分页查询 |
 
 ### 会话存储后端
 
@@ -190,11 +227,14 @@ FastAPI Router (main.py)
     │  Pydantic 校验
     ▼
 routes.py (handle_chat / handle_health)
-    │ 组装 messages + config
+    │ 校验用户 + 组装 messages + config
     ▼
 graph.builder.graph (LangGraph CompiledStateGraph)
     │  checkpointer 恢复历史
     │  chatbot node → LLM → ToolNode → chatbot node ...
+    ▼
+chat_history_service
+    │  写入 chat_sessions / chat_messages
     ▼
 HTTP Response
 ```
