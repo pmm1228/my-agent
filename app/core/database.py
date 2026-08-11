@@ -155,39 +155,45 @@ async def close_database() -> None:
 
 async def _bootstrap_admin(conn) -> None:
     settings = get_settings()
-    admin_password = settings.ADMIN_PASSWORD
-    if not admin_password.strip():
+    username = settings.ADMIN_USERNAME.strip() or "admin"
+    api_key = settings.ADMIN_API_KEY.strip()
+    admin_password = settings.ADMIN_PASSWORD.strip()
+
+    has_api_key = bool(api_key)
+    has_password = bool(admin_password)
+
+    if not has_api_key and not has_password:
         cur = await conn.execute(
             """
             SELECT COUNT(*) AS count
             FROM app_users
-            WHERE role = 'admin'
-                AND is_active = true
-                AND password_hash IS NOT NULL
+            WHERE role = 'admin' AND is_active = true
             """
         )
         admin_count = (await cur.fetchone())["count"]
         if admin_count:
-            logger.info("ADMIN_PASSWORD 未配置，保留已有可登录管理员账号")
-        else:
-            raise RuntimeError(
-                "ADMIN_PASSWORD 未配置，且数据库中没有可登录管理员。"
-                "请先在 .env 中设置 ADMIN_PASSWORD 后再启动 API。"
-            )
-        return
+            logger.info("ADMIN_API_KEY/ADMIN_PASSWORD 均未配置，保留已有管理员账号")
+            return
+        raise RuntimeError(
+            "ADMIN_API_KEY 和 ADMIN_PASSWORD 均未配置，且数据库中没有管理员。"
+            "请先在 .env 中设置至少一个。"
+        )
 
-    username = settings.ADMIN_USERNAME.strip() or "admin"
-    api_key = settings.ADMIN_API_KEY.strip() or generate_api_key()
+    if not api_key:
+        api_key = generate_api_key()
+        has_api_key = True
+        logger.warning(
+            "ADMIN_API_KEY 未配置，自动生成临时 API Key（请尽快配置 ADMIN_API_KEY）"
+        )
+
+    password_hash = hash_password(admin_password) if has_password else None
+
     await conn.execute(
         """
         INSERT INTO app_users (
-            id,
-            username,
-            display_name,
-            api_key_hash,
-            password_hash,
-            role,
-            is_active
+            id, username, display_name,
+            api_key_hash, password_hash,
+            role, is_active
         )
         VALUES (%s, %s, %s, %s, %s, 'admin', true)
         ON CONFLICT (username) DO UPDATE SET
@@ -195,7 +201,10 @@ async def _bootstrap_admin(conn) -> None:
                 WHEN %s THEN EXCLUDED.api_key_hash
                 ELSE app_users.api_key_hash
             END,
-            password_hash = EXCLUDED.password_hash,
+            password_hash = CASE
+                WHEN %s THEN EXCLUDED.password_hash
+                ELSE app_users.password_hash
+            END,
             role = 'admin',
             is_active = true,
             updated_at = now()
@@ -205,7 +214,8 @@ async def _bootstrap_admin(conn) -> None:
             username,
             "Bootstrap Admin",
             hash_api_key(api_key),
-            hash_password(admin_password),
-            bool(settings.ADMIN_API_KEY.strip()),
+            password_hash,
+            has_api_key,
+            has_password,
         ),
     )

@@ -9,6 +9,7 @@ langgraph>=0.2
 
 fastapi>=0.115
 uvicorn>=0.30
+gunicorn>=22.0
 streamlit>=1.40
 
 # 生产级 checkpoint

@@ -68,7 +68,7 @@ class UserCreateRequest(BaseModel):
         max_length=64,
         pattern=r"^[A-Za-z0-9_.-]+$",
     )
-    password: str = Field(..., min_length=8, max_length=128)
+    password: str | None = Field(default=None, min_length=8, max_length=128)
     display_name: str | None = Field(default=None, max_length=128)
     role: UserRole = "user"
     api_key: str | None = Field(

@@ -1,4 +1,67 @@
+# ============================================================
+# my-agent 生产部署（本机模拟 / 单机）
+# 启动：docker compose -f docker-compose.yml --env-file .env.production up -d --build
+# 日志：docker compose logs -f api
+# 停止：docker compose down        （保留数据）
+# 清空：docker compose down -v      （⚠️ 数据库全清）
+# ============================================================
+
+name: myagent
+
 services:
+  # ---------- 反向代理：对外唯一入口 ----------
+  caddy:
+    image: caddy:2-alpine
+    container_name: myagent-caddy
+    restart: unless-stopped
+    ports:
+      # 本机用 8080，避免跟系统常见 80 端口冲突
+      # 上公网时改成 "80:80" + 配域名让 Caddy 自动签 HTTPS
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - myagent-net
+
+  # ---------- API 服务（多 worker） ----------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: myagent-api
+    restart: unless-stopped
+    # 内部网络可访问，不对外直接暴露端口
+    # 外部流量必须经过 caddy 反代
+    environment:
+      # ↓ compose 里硬写内网地址，不依赖 .env.production
+      POSTGRES_URL: postgresql://myagent:myagent@postgres:5432/myagent
+      CHECKPOINTER_TYPE: postgres
+      # ↓ 以下从 .env.production 透传
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DEEPSEEK_API_BASE: ${DEEPSEEK_API_BASE:-https://api.deepseek.com/v1}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_TEMPERATURE: ${DEEPSEEK_TEMPERATURE:-0.2}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      HTTP_TIMEOUT: ${HTTP_TIMEOUT:-15}
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - myagent-net
+
+  # ---------- 数据库 ----------
   postgres:
     image: pgvector/pgvector:pg16
     container_name: myagent-pg
@@ -7,10 +70,26 @@ services:
       POSTGRES_USER: myagent
       POSTGRES_PASSWORD: myagent
       POSTGRES_DB: myagent
-    ports:
-      - "5432:5432"
     volumes:
       - myagent-pg-data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    # 本机开发时也需要直连（比如 psql 调试）
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myagent -d myagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - myagent-net
 
 volumes:
   myagent-pg-data:
+    name: myagent-pg-data
+
+networks:
+  myagent-net:
+    name: myagent-net
+    driver: bridge

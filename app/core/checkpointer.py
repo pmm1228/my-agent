@@ -23,7 +23,11 @@ class _PostgresCheckpointerProxy(BaseCheckpointSaver):
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
             from psycopg_pool import AsyncConnectionPool
 
-            pool = AsyncConnectionPool(self._conn_string, open=False)
+            pool = AsyncConnectionPool(
+                self._conn_string,
+                open=False,
+                kwargs={"autocommit": True},
+            )
             await pool.open()
             saver = AsyncPostgresSaver(pool)
             await saver.setup()

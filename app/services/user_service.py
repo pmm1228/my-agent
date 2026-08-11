@@ -86,13 +86,14 @@ async def _lock_user_admin_guard(conn) -> None:
 async def create_user(
     *,
     username: str,
-    password: str,
+    password: str | None = None,
     role: UserRole = "user",
     display_name: str | None = None,
     api_key: str | None = None,
     is_active: bool = True,
 ) -> CreatedUser:
     raw_api_key = api_key or generate_api_key()
+    pwd_hash = hash_password(password) if password else None
 
     try:
         async with db_connection() as conn:
@@ -123,7 +124,7 @@ async def create_user(
                         username,
                         display_name,
                         hash_api_key(raw_api_key),
-                        hash_password(password),
+                        pwd_hash,
                         role,
                         is_active,
                     ),
