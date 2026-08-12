@@ -13,11 +13,18 @@ import sys
 
 
 def run_once(question: str):
-    from app.services.chat_service import chat, close_resources
+    from app.services.chat_service import chat, close_resources, confirm_web_access
 
     async def _run():
         try:
-            return await chat(question)
+            result = await chat(question)
+            if result.status == "requires_confirmation":
+                answer = input("Agent 请求调用 Tavily（将消耗搜索额度），是否允许？[y/N] ").strip().lower()
+                result = await confirm_web_access(
+                    thread_id=result.thread_id,
+                    approved=answer in {"y", "yes"},
+                )
+            return result
         finally:
             await close_resources()
 
@@ -27,7 +34,7 @@ def run_once(question: str):
 
 def run_repl():
     print("My-Agent 已启动，输入 q 退出")
-    from app.services.chat_service import chat, close_resources
+    from app.services.chat_service import chat, close_resources, confirm_web_access
 
     thread_id = None
     while True:
@@ -49,6 +56,19 @@ def run_repl():
 
         reply = asyncio.run(_run())
         thread_id = reply.thread_id
+        if reply.status == "requires_confirmation":
+            approved = input("Agent 请求调用 Tavily（将消耗搜索额度），是否允许？[y/N] ").strip().lower() in {"y", "yes"}
+
+            async def _confirm():
+                try:
+                    return await confirm_web_access(
+                        thread_id=thread_id,
+                        approved=approved,
+                    )
+                finally:
+                    await close_resources()
+
+            reply = asyncio.run(_confirm())
         print(f"Bot: {reply.reply}")
 
 

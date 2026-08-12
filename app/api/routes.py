@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 from app.api.schemas import (
     ChatMessageListResponse,
     ChatMessageResponse,
+    ChatConfirmationRequest,
     ChatRequest,
     ChatResponse,
     ChatSessionDeleteResponse,
@@ -23,6 +24,7 @@ from app.api.schemas import (
     UserResponse,
 )
 from app.core.config import get_settings
+from app.core.conversation_lock import ConversationLockTimeout
 from app.core.database import DatabaseNotConfigured
 from app.core.security import create_access_token
 from app.services.chat_history_service import (
@@ -34,7 +36,13 @@ from app.services.chat_history_service import (
     list_chat_sessions,
     record_chat_exchange,
 )
-from app.services.chat_service import chat, delete_thread_history, health, stream_chat
+from app.services.chat_service import (
+    chat,
+    confirm_web_access,
+    delete_thread_history,
+    health,
+    stream_chat,
+)
 from app.services.user_service import (
     CannotDeleteLastAdmin,
     UserAlreadyExists,
@@ -89,41 +97,129 @@ def _to_chat_message_response(message: ChatMessageRecord) -> ChatMessageResponse
 
 
 async def handle_chat(req: ChatRequest, *, user: UserRecord) -> ChatResponse:
-    result = await chat(
-        req.message,
-        thread_id=req.thread_id,
-        system=req.system,
-        user_id=str(user.id),
-    )
     history_saved = True
+
+    async def save_history(result):
+        nonlocal history_saved
+        try:
+            await record_chat_exchange(
+                user_id=user.id,
+                thread_id=result.thread_id,
+                user_message=req.message,
+                assistant_reply=result.reply,
+                tool_calls=result.tool_calls,
+            )
+        except Exception:
+            history_saved = False
+            logger.exception(
+                "聊天历史保存失败：user_id=%s thread_id=%s",
+                user.id,
+                result.thread_id,
+            )
+
     try:
-        await record_chat_exchange(
-            user_id=user.id,
-            thread_id=result.thread_id,
-            user_message=req.message,
-            assistant_reply=result.reply,
-            tool_calls=result.tool_calls,
+        result = await chat(
+            req.message,
+            thread_id=req.thread_id,
+            system=req.system,
+            user_id=str(user.id),
+            on_completed=save_history,
         )
-    except Exception:
-        history_saved = False
-        logger.exception("聊天历史保存失败：user_id=%s thread_id=%s", user.id, result.thread_id)
+    except ConversationLockTimeout as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="当前会话正在处理上一条消息，请稍后重试",
+        ) from e
 
     return ChatResponse(
         reply=result.reply,
         thread_id=result.thread_id,
         tool_calls=result.tool_calls,
         history_saved=history_saved,
+        status=result.status,
+        confirmation=result.confirmation,
+    )
+
+
+async def handle_chat_confirmation(
+    req: ChatConfirmationRequest,
+    *,
+    user: UserRecord,
+) -> ChatResponse:
+    history_saved = True
+
+    async def save_history(result):
+        nonlocal history_saved
+        try:
+            await record_chat_exchange(
+                user_id=user.id,
+                thread_id=result.thread_id,
+                user_message=result.input_message,
+                assistant_reply=result.reply,
+                tool_calls=result.tool_calls,
+            )
+        except Exception:
+            history_saved = False
+            logger.exception(
+                "确认联网后的聊天历史保存失败：user_id=%s thread_id=%s",
+                user.id,
+                result.thread_id,
+            )
+
+    try:
+        result = await confirm_web_access(
+            thread_id=req.thread_id,
+            approved=req.approved,
+            user_id=str(user.id),
+            on_completed=save_history,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except ConversationLockTimeout as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="当前会话正在处理上一条消息，请稍后重试",
+        ) from exc
+
+    return ChatResponse(
+        reply=result.reply,
+        thread_id=result.thread_id,
+        tool_calls=result.tool_calls,
+        history_saved=history_saved,
+        status=result.status,
+        confirmation=result.confirmation,
     )
 
 
 async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> StreamingResponse:
     async def generate():
+        history_saved = True
+
+        async def save_history(result):
+            nonlocal history_saved
+            try:
+                await record_chat_exchange(
+                    user_id=user.id,
+                    thread_id=result.thread_id,
+                    user_message=req.message,
+                    assistant_reply=result.reply,
+                    tool_calls=result.tool_calls,
+                )
+            except Exception:
+                history_saved = False
+                logger.exception(
+                    "聊天历史保存失败：user_id=%s thread_id=%s",
+                    user.id,
+                    result.thread_id,
+                )
+
         try:
             async for event in stream_chat(
                 req.message,
                 thread_id=req.thread_id,
                 system=req.system,
                 user_id=str(user.id),
+                on_completed=save_history,
             ):
                 if event.type == "token":
                     yield json.dumps({"type": "token", "content": event.content}, ensure_ascii=False) + "\n"
@@ -133,29 +229,27 @@ async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> Streaming
                 if result is None:
                     continue
 
-                history_saved = True
-                try:
-                    await record_chat_exchange(
-                        user_id=user.id,
-                        thread_id=result.thread_id,
-                        user_message=req.message,
-                        assistant_reply=result.reply,
-                        tool_calls=result.tool_calls,
-                    )
-                except Exception:
-                    history_saved = False
-                    logger.exception("聊天历史保存失败：user_id=%s thread_id=%s", user.id, result.thread_id)
-
                 yield json.dumps(
                     {
-                        "type": "done",
+                        "type": event.type,
                         "reply": result.reply,
                         "thread_id": result.thread_id,
                         "tool_calls": result.tool_calls,
                         "history_saved": history_saved,
+                        "status": result.status,
+                        "confirmation": result.confirmation,
                     },
                     ensure_ascii=False,
                 ) + "\n"
+        except ConversationLockTimeout:
+            yield json.dumps(
+                {
+                    "type": "error",
+                    "code": "conversation_busy",
+                    "message": "当前会话正在处理上一条消息，请稍后重试",
+                },
+                ensure_ascii=False,
+            ) + "\n"
         except Exception:
             logger.exception("流式聊天失败：user_id=%s", user.id)
             yield json.dumps({"type": "error", "message": "生成回复失败，请稍后重试"}, ensure_ascii=False) + "\n"
@@ -175,7 +269,6 @@ async def handle_login(req: LoginRequest) -> LoginResponse:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="数据库未配置，无法登录",
         ) from e
-
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -270,13 +363,24 @@ async def handle_delete_chat_session(
     user: UserRecord,
     thread_id: str,
 ) -> ChatSessionDeleteResponse:
+    async def delete_history() -> bool:
+        return await delete_chat_session(user_id=user.id, thread_id=thread_id)
+
     try:
-        await delete_thread_history(thread_id=thread_id, user_id=str(user.id))
-        deleted = await delete_chat_session(user_id=user.id, thread_id=thread_id)
+        deleted = await delete_thread_history(
+            thread_id=thread_id,
+            user_id=str(user.id),
+            delete_persistent_history=delete_history,
+        )
     except DatabaseNotConfigured as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="数据库未配置，无法删除聊天会话",
+        ) from e
+    except ConversationLockTimeout as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="当前会话正在处理，暂时无法删除",
         ) from e
 
     if not deleted:

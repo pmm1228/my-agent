@@ -1,10 +1,10 @@
 from langgraph.graph import START, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import tools_condition
 
 from app.core.checkpointer import get_checkpointer
 from app.graph.nodes import chatbot
 from app.graph.state import State
-from app.tools.registry import all_tools
+from app.graph.web_confirmation import tools_with_web_confirmation
 
 
 def build_graph(checkpointer=None):
@@ -21,7 +21,7 @@ def build_graph(checkpointer=None):
 
     builder = StateGraph(State)
     builder.add_node("chatbot", chatbot)
-    builder.add_node("tools", ToolNode(all_tools))
+    builder.add_node("tools", tools_with_web_confirmation)
     builder.add_edge(START, "chatbot")
     builder.add_conditional_edges("chatbot", tools_condition)
     builder.add_edge("tools", "chatbot")

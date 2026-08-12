@@ -20,6 +20,13 @@ class ChatResponse(BaseModel):
     thread_id: str
     tool_calls: list[dict] = Field(default_factory=list)
     history_saved: bool = True
+    status: Literal["completed", "requires_confirmation"] = "completed"
+    confirmation: dict | None = None
+
+
+class ChatConfirmationRequest(BaseModel):
+    thread_id: str = Field(..., min_length=1, max_length=256)
+    approved: bool
 
 
 class ChatSessionResponse(BaseModel):

@@ -20,10 +20,10 @@ COPY run.py .
 
 EXPOSE 8000
 
-# 生产启动：gunicorn 多 worker + uvicorn worker class
-# 单机 2-4 worker 足够模拟，正式按 CPU 核数调
+# 会话锁是进程内锁，必须保持单 worker。
+# 需要多 worker/多实例时，应先接入带幂等保护的分布式会话队列。
 CMD ["gunicorn", "app.api.main:app", \
-     "--workers", "2", \
+     "--workers", "1", \
      "--worker-class", "uvicorn.workers.UvicornWorker", \
      "--bind", "0.0.0.0:8000", \
      "--access-logfile", "-", \

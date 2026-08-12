@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth import require_admin_user, require_user
 from app.api.routes import (
     handle_chat,
+    handle_chat_confirmation,
     handle_chat_stream,
     handle_create_user,
     handle_delete_user,
@@ -22,6 +23,7 @@ from app.api.routes import (
 )
 from app.api.schemas import (
     ChatMessageListResponse,
+    ChatConfirmationRequest,
     ChatRequest,
     ChatResponse,
     ChatSessionDeleteResponse,
@@ -120,6 +122,19 @@ def create_app() -> FastAPI:
         user: UserRecord = Depends(require_user),
     ) -> ChatResponse:
         return await handle_chat(req, user=user)
+
+    @app.post(
+        "/chat/confirm",
+        tags=["chat"],
+        summary="确认或拒绝联网",
+        description="恢复一个因联网工具调用而暂停的会话。",
+        response_model=ChatResponse,
+    )
+    async def confirm_chat_web_access(
+        req: ChatConfirmationRequest,
+        user: UserRecord = Depends(require_user),
+    ) -> ChatResponse:
+        return await handle_chat_confirmation(req, user=user)
 
     @app.post(
         "/chat/stream",

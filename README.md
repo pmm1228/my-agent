@@ -5,6 +5,7 @@
 ## 特性
 
 - 🔧 **工具可插拔**：新增工具只需在 `app/tools/` 下创建文件 + `registry.py` 注册
+- 🔎 **按需联网**：Tavily 搜索 + 公开网页正文读取，仅在实时信息或外部查证确有必要时调用
 - 🤖 **LangGraph 工作流**：单 Agent → 多 Agent Supervisor 平滑演进
 - 💾 **会话持久化**：MemorySaver（开发）/ AsyncPostgresSaver（生产）可切换
 - 🧾 **永久聊天历史**：业务表保存会话和消息，便于分页展示 / 审计
@@ -91,6 +92,9 @@ cat .env
 |---|---|---|
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 模型名 |
 | `DEEPSEEK_API_BASE` | `https://api.deepseek.com/v1` | API 兼容端点 |
+| `TAVILY_API_KEY` | — | Tavily 搜索密钥；启用通用联网搜索时必填 |
+| `WEB_SEARCH_MAX_RESULTS` | `5` | 单次联网搜索允许返回的最大结果数（1–10） |
+| `WEB_PAGE_MAX_BYTES` | `1000000` | 单个网页最多处理的字节数 |
 | `CHECKPOINTER_TYPE` | `memory` | `memory`（进程内）或 `postgres`（持久化到 PostgreSQL） |
 | `POSTGRES_URL` | — | PostgreSQL 连接串，启用 `postgres` checkpointer 时必填 |
 | `DATABASE_URL` | `POSTGRES_URL` | 用户权限表连接串；不配置时复用 `POSTGRES_URL` |
@@ -128,6 +132,8 @@ python run.py api --port 9001
 streamlit run streamlit_app.py
 ```
 
+> **并发部署限制**：当前相同 `thread_id` 的串行控制使用进程内锁，API 必须以单 worker 运行。仓库内 Dockerfile 已固定为 `--workers 1`。在接入请求幂等和分布式会话队列前，不要增加 Gunicorn/Uvicorn worker 数，也不要横向扩容 API 实例。
+
 ### 4. HTTP 调用
 
 ```bash
@@ -153,6 +159,12 @@ curl -X POST http://localhost:8000/chat \
   -H "Authorization: Bearer 你的 access_token" \
   -H "Content-Type: application/json" \
   -d '{"message": "那明天呢？", "thread_id": "上一次返回的 thread_id"}'
+
+# 当 search_web 将消耗 Tavily 搜索额度、响应 status=requires_confirmation 时确认或拒绝
+curl -X POST http://localhost:8000/chat/confirm \
+  -H "Authorization: Bearer 你的 access_token" \
+  -H "Content-Type: application/json" \
+  -d '{"thread_id": "待确认的 thread_id", "approved": true}'
 
 # 查看当前用户聊天会话
 curl http://localhost:8000/chat/sessions \
@@ -257,6 +269,7 @@ POSTGRES_URL=postgresql://myagent:myagent@localhost:5432/myagent
 |---|---|---|
 | `CHECKPOINTER_TYPE` | `memory` | `memory`（进程内，重启丢失）或 `postgres`（持久化） |
 | `POSTGRES_URL` | — | PostgreSQL 连接串，仅 `CHECKPOINTER_TYPE=postgres` 时需要 |
+| `CONVERSATION_LOCK_TIMEOUT_SECONDS` | `30` | 同一进程内等待相同 thread 的超时秒数；必须大于 0 |
 
 > 想临时切回内存模式，改 `.env` 为 `CHECKPOINTER_TYPE=memory` 重启即可，表结构不受影响。
 

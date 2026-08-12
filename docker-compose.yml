@@ -26,7 +26,7 @@ services:
     networks:
       - myagent-net
 
-  # ---------- API 服务（多 worker） ----------
+  # ---------- API 服务（单 worker，保证 thread 串行） ----------
   api:
     build:
       context: .
