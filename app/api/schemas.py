@@ -36,6 +36,11 @@ class ChatSessionListResponse(BaseModel):
     total: int
 
 
+class ChatSessionDeleteResponse(BaseModel):
+    deleted: bool = True
+    thread_id: str
+
+
 class ChatMessageResponse(BaseModel):
     id: int
     session_id: UUID

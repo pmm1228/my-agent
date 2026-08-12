@@ -9,6 +9,7 @@ from app.api.schemas import (
     ChatMessageResponse,
     ChatRequest,
     ChatResponse,
+    ChatSessionDeleteResponse,
     ChatSessionListResponse,
     ChatSessionResponse,
     LoginRequest,
@@ -28,11 +29,12 @@ from app.services.chat_history_service import (
     ChatMessageRecord,
     ChatSessionRecord,
     count_chat_sessions,
+    delete_chat_session,
     list_chat_messages,
     list_chat_sessions,
     record_chat_exchange,
 )
-from app.services.chat_service import chat, health, stream_chat
+from app.services.chat_service import chat, delete_thread_history, health, stream_chat
 from app.services.user_service import (
     CannotDeleteLastAdmin,
     UserAlreadyExists,
@@ -261,6 +263,29 @@ async def handle_list_chat_messages(
         items=[_to_chat_message_response(m) for m in messages],
         total=total,
     )
+
+
+async def handle_delete_chat_session(
+    *,
+    user: UserRecord,
+    thread_id: str,
+) -> ChatSessionDeleteResponse:
+    try:
+        await delete_thread_history(thread_id=thread_id, user_id=str(user.id))
+        deleted = await delete_chat_session(user_id=user.id, thread_id=thread_id)
+    except DatabaseNotConfigured as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="数据库未配置，无法删除聊天会话",
+        ) from e
+
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="聊天会话不存在",
+        )
+
+    return ChatSessionDeleteResponse(thread_id=thread_id)
 
 
 async def handle_create_user(req: UserCreateRequest) -> UserCreateResponse:

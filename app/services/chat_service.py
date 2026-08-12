@@ -134,6 +134,11 @@ async def close_resources() -> None:
         await close()
 
 
+async def delete_thread_history(*, thread_id: str, user_id: str) -> None:
+    checkpoint_thread_id = _chat_config(thread_id, user_id)["configurable"]["thread_id"]
+    await graph.checkpointer.adelete_thread(checkpoint_thread_id)
+
+
 async def health() -> dict:
     settings = get_settings()
     return {"status": "ok", "model": settings.DEEPSEEK_MODEL}

@@ -10,6 +10,7 @@ from app.api.routes import (
     handle_chat_stream,
     handle_create_user,
     handle_delete_user,
+    handle_delete_chat_session,
     handle_get_me,
     handle_get_user,
     handle_health,
@@ -23,6 +24,7 @@ from app.api.schemas import (
     ChatMessageListResponse,
     ChatRequest,
     ChatResponse,
+    ChatSessionDeleteResponse,
     ChatSessionListResponse,
     HealthResponse,
     LoginRequest,
@@ -168,6 +170,19 @@ def create_app() -> FastAPI:
             limit=limit,
             offset=offset,
         )
+
+    @app.delete(
+        "/chat/sessions/{thread_id}",
+        tags=["chat"],
+        summary="删除聊天会话",
+        description="删除当前用户的指定聊天会话、消息及 Agent 上下文。",
+        response_model=ChatSessionDeleteResponse,
+    )
+    async def delete_chat_session(
+        thread_id: str,
+        user: UserRecord = Depends(require_user),
+    ) -> ChatSessionDeleteResponse:
+        return await handle_delete_chat_session(user=user, thread_id=thread_id)
 
     @app.post(
         "/users",

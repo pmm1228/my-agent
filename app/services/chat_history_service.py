@@ -178,6 +178,22 @@ async def count_chat_sessions(*, user_id: uuid.UUID) -> int:
     return row["count"]
 
 
+async def delete_chat_session(*, user_id: uuid.UUID, thread_id: str) -> bool:
+    """Delete one session owned by the user; messages cascade with the session."""
+    async with db_connection() as conn:
+        cur = await conn.execute(
+            """
+            DELETE FROM chat_sessions
+            WHERE user_id = %s AND thread_id = %s
+            RETURNING id
+            """,
+            (user_id, thread_id),
+        )
+        row = await cur.fetchone()
+
+    return row is not None
+
+
 async def list_chat_messages(
     *,
     user_id: uuid.UUID,
