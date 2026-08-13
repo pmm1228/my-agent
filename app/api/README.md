@@ -267,10 +267,10 @@ AsyncPostgresSaver 首次启动时自动建表（`checkpoints`、`checkpoint_blo
 HTTP Request
     │
     ▼
-FastAPI Router (main.py)
+FastAPI Router (routers/)
     │  Pydantic 校验
     ▼
-routes.py (handle_chat / handle_health)
+handlers/ (chat / users / auth / system)
     │ 校验用户 + 组装 messages + config
     ▼
 graph.builder.graph (LangGraph CompiledStateGraph)

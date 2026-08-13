@@ -87,3 +87,4 @@ async def require_admin_user(
             detail="需要管理员权限",
         )
     return user
+

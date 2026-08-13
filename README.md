@@ -57,9 +57,11 @@ my-agent/
     │
     ├── api/                   # FastAPI 层
     │   ├── main.py            # FastAPI app 工厂
-    │   ├── auth.py            # Bearer Token 鉴权依赖
-    │   ├── schemas.py         # 请求/响应模型
-    │   └── routes.py          # handle_chat / handle_health / handle_create_user
+    │   ├── schemas/           # auth / chat / users / system 请求响应模型
+    │   ├── mappers.py         # Service 对象到 API 响应的统一转换
+    │   ├── dependencies/      # Bearer Token / API Key 鉴权依赖
+    │   ├── routers/           # chat / users / auth / system 路由注册
+    │   └── handlers/          # 按领域处理请求与转换 HTTP 异常
     │
     └── utils/
         ├── http.py             # httpx.Client 单例

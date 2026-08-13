@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-from app.api.routes import (
+from app.api.handlers.chat import (
     handle_chat,
     handle_chat_stream,
     handle_delete_chat_session,
@@ -22,7 +22,7 @@ class ChatLockErrorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_lock_timeout_returns_conflict(self):
         with patch(
-            "app.api.routes.chat",
+            "app.api.handlers.chat.chat",
             AsyncMock(side_effect=ConversationLockTimeout()),
         ):
             with self.assertRaises(HTTPException) as raised:
@@ -32,7 +32,7 @@ class ChatLockErrorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delete_lock_timeout_returns_conflict(self):
         with patch(
-            "app.api.routes.delete_thread_history",
+            "app.api.handlers.chat.delete_thread_history",
             AsyncMock(side_effect=ConversationLockTimeout()),
         ):
             with self.assertRaises(HTTPException) as raised:
@@ -48,7 +48,7 @@ class ChatLockErrorTests(unittest.IsolatedAsyncioTestCase):
             raise ConversationLockTimeout()
             yield
 
-        with patch("app.api.routes.stream_chat", timed_out_stream):
+        with patch("app.api.handlers.chat.stream_chat", timed_out_stream):
             response = await handle_chat_stream(self.request, user=self.user)
             chunks = [chunk async for chunk in response.body_iterator]
 

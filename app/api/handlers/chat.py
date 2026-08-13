@@ -1,32 +1,20 @@
 import json
-from uuid import UUID
 
 from fastapi import HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from app.api.schemas import (
+from app.api.schemas.chat import (
+    ChatConfirmationRequest,
     ChatMessageListResponse,
     ChatMessageResponse,
-    ChatConfirmationRequest,
     ChatRequest,
     ChatResponse,
     ChatSessionDeleteResponse,
     ChatSessionListResponse,
     ChatSessionResponse,
-    LoginRequest,
-    LoginResponse,
-    UpdateUserRequest,
-    UpdateUserResponse,
-    UserCreateRequest,
-    UserCreateResponse,
-    UserDeleteResponse,
-    UserListResponse,
-    UserResponse,
 )
-from app.core.config import get_settings
 from app.core.conversation_lock import ConversationLockTimeout
 from app.core.database import DatabaseNotConfigured
-from app.core.security import create_access_token
 from app.services.chat_history_service import (
     ChatMessageRecord,
     ChatSessionRecord,
@@ -40,38 +28,13 @@ from app.services.chat_service import (
     chat,
     confirm_web_access,
     delete_thread_history,
-    health,
     stream_chat,
 )
-from app.services.user_service import (
-    CannotDeleteLastAdmin,
-    UserAlreadyExists,
-    UserNotFound,
-    UserRecord,
-    authenticate_user,
-    count_users,
-    create_user,
-    delete_user,
-    get_user_by_id,
-    list_users,
-    update_user,
-)
+from app.services.user_service import UserRecord
 from app.utils.logging import get_logger
 
 
 logger = get_logger(__name__)
-
-
-def _to_user_response(user: UserRecord) -> UserResponse:
-    return UserResponse(
-        id=user.id,
-        username=user.username,
-        display_name=user.display_name,
-        role=user.role,
-        is_active=user.is_active,
-        created_at=user.created_at,
-        updated_at=user.updated_at,
-    )
 
 
 def _to_chat_session_response(session: ChatSessionRecord) -> ChatSessionResponse:
@@ -222,13 +185,15 @@ async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> Streaming
                 on_completed=save_history,
             ):
                 if event.type == "token":
-                    yield json.dumps({"type": "token", "content": event.content}, ensure_ascii=False) + "\n"
+                    yield json.dumps(
+                        {"type": "token", "content": event.content},
+                        ensure_ascii=False,
+                    ) + "\n"
                     continue
 
                 result = event.result
                 if result is None:
                     continue
-
                 yield json.dumps(
                     {
                         "type": event.type,
@@ -252,52 +217,12 @@ async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> Streaming
             ) + "\n"
         except Exception:
             logger.exception("流式聊天失败：user_id=%s", user.id)
-            yield json.dumps({"type": "error", "message": "生成回复失败，请稍后重试"}, ensure_ascii=False) + "\n"
+            yield json.dumps(
+                {"type": "error", "message": "生成回复失败，请稍后重试"},
+                ensure_ascii=False,
+            ) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
-
-
-async def handle_health() -> dict:
-    return await health()
-
-
-async def handle_login(req: LoginRequest) -> LoginResponse:
-    try:
-        user = await authenticate_user(req.username.strip(), req.password)
-    except DatabaseNotConfigured as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="数据库未配置，无法登录",
-        ) from e
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="用户名或密码错误",
-        )
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="用户已禁用",
-        )
-
-    settings = get_settings()
-    expires_in = max(settings.JWT_EXPIRE_MINUTES, 1) * 60
-    access_token = create_access_token(
-        subject=str(user.id),
-        secret=settings.JWT_SECRET,
-        expires_in_seconds=expires_in,
-        extra={
-            "username": user.username,
-            "role": user.role,
-        },
-    )
-
-    return LoginResponse(
-        access_token=access_token,
-        expires_in=expires_in,
-        user=_to_user_response(user),
-    )
 
 
 async def handle_list_chat_sessions(
@@ -307,11 +232,7 @@ async def handle_list_chat_sessions(
     offset: int = 0,
 ) -> ChatSessionListResponse:
     try:
-        sessions = await list_chat_sessions(
-            user_id=user.id,
-            limit=limit,
-            offset=offset,
-        )
+        sessions = await list_chat_sessions(user_id=user.id, limit=limit, offset=offset)
         total = await count_chat_sessions(user_id=user.id)
     except DatabaseNotConfigured as e:
         raise HTTPException(
@@ -388,123 +309,4 @@ async def handle_delete_chat_session(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="聊天会话不存在",
         )
-
     return ChatSessionDeleteResponse(thread_id=thread_id)
-
-
-async def handle_create_user(req: UserCreateRequest) -> UserCreateResponse:
-    try:
-        created = await create_user(
-            username=req.username,
-            password=req.password,
-            role=req.role,
-            display_name=req.display_name,
-            api_key=req.api_key,
-            is_active=req.is_active,
-        )
-    except UserAlreadyExists as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
-    except DatabaseNotConfigured as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="数据库未配置，无法创建用户",
-        ) from e
-
-    user = _to_user_response(created.user)
-    return UserCreateResponse(**user.model_dump(), api_key=created.api_key)
-
-
-async def handle_delete_user(user_id: UUID) -> UserDeleteResponse:
-    try:
-        user = await delete_user(user_id)
-    except CannotDeleteLastAdmin as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
-    except UserNotFound as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        ) from e
-    except DatabaseNotConfigured as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="数据库未配置，无法删除用户",
-        ) from e
-
-    return UserDeleteResponse(user=_to_user_response(user))
-
-
-async def handle_get_me(user: UserRecord) -> UserResponse:
-    return _to_user_response(user)
-
-
-async def handle_list_users(*, limit: int = 100, offset: int = 0) -> UserListResponse:
-    try:
-        users = await list_users(limit=limit, offset=offset)
-        total = await count_users()
-    except DatabaseNotConfigured as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="数据库未配置",
-        ) from e
-
-    return UserListResponse(
-        items=[_to_user_response(u) for u in users],
-        total=total,
-    )
-
-
-async def handle_get_user(user_id: UUID) -> UserResponse:
-    try:
-        user = await get_user_by_id(user_id)
-    except DatabaseNotConfigured as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="数据库未配置",
-        ) from e
-
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="用户不存在",
-        )
-
-    return _to_user_response(user)
-
-
-async def handle_update_user(user_id: UUID, req: UpdateUserRequest) -> UpdateUserResponse:
-    try:
-        updated = await update_user(
-            user_id,
-            role=req.role,
-            is_active=req.is_active,
-            display_name=req.display_name,
-            update_display_name="display_name" in req.model_fields_set,
-            password=req.password,
-            reset_api_key=req.reset_api_key,
-        )
-    except CannotDeleteLastAdmin as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
-    except UserNotFound as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e),
-        ) from e
-    except DatabaseNotConfigured as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="数据库未配置",
-        ) from e
-
-    user_resp = _to_user_response(updated.user)
-    data = user_resp.model_dump()
-    data["api_key"] = updated.api_key
-    return UpdateUserResponse(**data)
