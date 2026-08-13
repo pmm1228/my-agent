@@ -1,4 +1,5 @@
 import os
+import ipaddress
 from functools import lru_cache
 from typing import Literal
 
@@ -45,6 +46,7 @@ class Settings:
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
     WEB_SEARCH_MAX_RESULTS: int = int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5"))
     WEB_PAGE_MAX_BYTES: int = int(os.getenv("WEB_PAGE_MAX_BYTES", "1000000"))
+    WEB_ALLOWED_PROXY_CIDRS: str = os.getenv("WEB_ALLOWED_PROXY_CIDRS", "")
 
     # ---- API ----
     API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
@@ -64,4 +66,10 @@ def get_settings() -> Settings:
         raise RuntimeError("WEB_SEARCH_MAX_RESULTS 必须在 1 到 10 之间")
     if s.WEB_PAGE_MAX_BYTES <= 0:
         raise RuntimeError("WEB_PAGE_MAX_BYTES 必须大于 0")
+    try:
+        for item in s.WEB_ALLOWED_PROXY_CIDRS.split(","):
+            if item.strip():
+                ipaddress.ip_network(item.strip(), strict=True)
+    except ValueError as exc:
+        raise RuntimeError("WEB_ALLOWED_PROXY_CIDRS 包含无效 CIDR") from exc
     return s

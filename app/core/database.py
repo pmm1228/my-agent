@@ -18,6 +18,9 @@ class DatabaseNotConfigured(RuntimeError):
     pass
 
 
+_CONVERSATION_TABLES = ("chat_messages", "chat_sessions")
+
+
 def get_database_url() -> str:
     settings = get_settings()
     return settings.DATABASE_URL or settings.POSTGRES_URL
@@ -50,7 +53,14 @@ async def get_pool():
             open=False,
             kwargs={"autocommit": True, "row_factory": dict_row},
         )
-        await pool.open()
+        try:
+            await pool.open()
+        except Exception:
+            try:
+                await pool.close()
+            except Exception:
+                pass
+            raise
         _pool = pool
         return _pool
 
@@ -141,6 +151,41 @@ async def init_database() -> bool:
 
     logger.info("数据库初始化完成：用户表和聊天历史表已就绪")
     return True
+
+
+async def _table_exists(conn, table_name: str) -> bool:
+    cur = await conn.execute(
+        "SELECT to_regclass(%s) AS table_name",
+        (f"public.{table_name}",),
+    )
+    row = await cur.fetchone()
+    return bool(row and row["table_name"] is not None)
+
+
+async def reset_chat_history_data() -> dict[str, int]:
+    """Clear business chat history through DATABASE_URL while preserving users."""
+    pool = await get_pool()
+    cleared: dict[str, int] = {}
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            existing = []
+            for table_name in _CONVERSATION_TABLES:
+                if not await _table_exists(conn, table_name):
+                    continue
+                existing.append(table_name)
+                cur = await conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}")
+                cleared[table_name] = (await cur.fetchone())["count"]
+
+            conversation_tables = [
+                name for name in _CONVERSATION_TABLES if name in existing
+            ]
+            if conversation_tables:
+                await conn.execute(
+                    f"TRUNCATE TABLE {', '.join(conversation_tables)} RESTART IDENTITY"
+                )
+
+    logger.info("业务聊天历史已清空，用户与长期记忆数据保持不变")
+    return cleared
 
 
 async def close_database() -> None:

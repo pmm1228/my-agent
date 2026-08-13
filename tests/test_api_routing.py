@@ -39,6 +39,7 @@ class ApiRoutingTests(unittest.TestCase):
         self.assertEqual(
             set(schemas),
             {
+                "AgentErrorResponse",
                 "ChatConfirmationRequest",
                 "ChatMessageListResponse",
                 "ChatMessageResponse",
@@ -61,6 +62,21 @@ class ApiRoutingTests(unittest.TestCase):
                 "ValidationError",
             },
         )
+
+    def test_conflict_response_contract_is_declared_on_non_stream_operations(self):
+        paths = create_app().openapi()["paths"]
+
+        for method, path in (
+            ("post", "/chat"),
+            ("post", "/chat/confirm"),
+            ("delete", "/chat/sessions/{thread_id}"),
+        ):
+            response = paths[path][method]["responses"]["409"]
+            schema = response["content"]["application/json"]["schema"]
+            self.assertEqual(
+                schema["$ref"],
+                "#/components/schemas/AgentErrorResponse",
+            )
 
 
 if __name__ == "__main__":

@@ -5,9 +5,11 @@ from typing import AsyncIterator, Literal
 
 from langgraph.types import Command
 
+from app.agents.contracts import CURRENT_STATE_SCHEMA_VERSION
 from app.core.config import get_settings
 from app.core.conversation_lock import conversation_locks
 from app.graph.prompts import SYSTEM_PROMPT
+from app.utils.logging import get_logger
 
 
 @dataclass(slots=True)
@@ -28,7 +30,50 @@ class ChatStreamEvent:
 
 
 ChatCompletedCallback = Callable[[ChatResult], Awaitable[None]]
+StateResetCallback = Callable[[str], Awaitable[bool]]
 _chat_graph = None
+logger = get_logger(__name__)
+
+
+class AgentConflictError(ValueError):
+    """Machine-readable conflict shared by HTTP and streaming transports."""
+
+    def __init__(self, *, code: str, message: str, details: dict | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+    def as_dict(self) -> dict:
+        return {
+            "type": "error",
+            "code": self.code,
+            "message": self.message,
+            "details": self.details,
+        }
+
+
+class PendingConfirmationError(AgentConflictError):
+    """Raised when a new turn would replace an interrupted confirmation flow."""
+
+    def __init__(self, confirmation: dict):
+        super().__init__(
+            code="pending_confirmation",
+            message="当前会话有待确认的联网请求，请先确认或拒绝后再发送新消息",
+            details={"confirmation": confirmation},
+        )
+        self.confirmation = confirmation
+
+
+class WorkflowResetRequiredError(AgentConflictError):
+    """Raised after an incompatible checkpoint has been safely discarded."""
+
+    def __init__(self, *, history_cleared: bool = False):
+        super().__init__(
+            code="workflow_reset_required",
+            message="工作流状态已升级，旧会话状态已清除，请重新发送完整需求",
+            details={"checkpoint_cleared": True, "history_cleared": history_cleared},
+        )
 
 
 def get_chat_graph():
@@ -44,10 +89,43 @@ def get_chat_graph():
     return _chat_graph
 
 
-async def _get_thread_history(config: dict) -> tuple[bool, int]:
+async def _clear_incompatible_state(
+    *,
+    graph,
+    config: dict,
+    thread_id: str,
+    on_state_reset: StateResetCallback | None,
+) -> None:
+    await graph.checkpointer.adelete_thread(_checkpoint_thread_id(config))
+    history_cleared = False
+    if on_state_reset is not None:
+        try:
+            history_cleared = await on_state_reset(thread_id)
+        except Exception:
+            logger.exception("清理不兼容业务聊天历史失败：thread_id=%s", thread_id)
+    raise WorkflowResetRequiredError(history_cleared=history_cleared)
+
+
+async def _get_thread_history(
+    config: dict,
+    *,
+    thread_id: str,
+    on_state_reset: StateResetCallback | None,
+) -> tuple[bool, int]:
     graph = get_chat_graph()
     snapshot = await graph.aget_state(config)
-    messages = snapshot.values.get("messages", []) if snapshot.values else []
+    values = snapshot.values or {}
+    messages = values.get("messages", [])
+    if messages and values.get("state_schema_version") != CURRENT_STATE_SCHEMA_VERSION:
+        await _clear_incompatible_state(
+            graph=graph,
+            config=config,
+            thread_id=thread_id,
+            on_state_reset=on_state_reset,
+        )
+    confirmation = _pending_confirmation(snapshot)
+    if confirmation is not None:
+        raise PendingConfirmationError(confirmation)
     return bool(messages), len(messages)
 
 
@@ -128,14 +206,22 @@ async def chat(
     system: str | None = None,
     user_id: str | None = None,
     on_completed: ChatCompletedCallback | None = None,
+    on_state_reset: StateResetCallback | None = None,
 ) -> ChatResult:
     thread_id = thread_id or str(uuid.uuid4())
     config = _chat_config(thread_id, user_id)
     async with conversation_locks.acquire(_checkpoint_thread_id(config)):
         graph = get_chat_graph()
-        has_history, previous_message_count = await _get_thread_history(config)
+        has_history, previous_message_count = await _get_thread_history(
+            config,
+            thread_id=thread_id,
+            on_state_reset=on_state_reset,
+        )
         result = await graph.ainvoke(
-            {"messages": _input_messages(message, has_history=has_history, system=system)},
+            {
+                "messages": _input_messages(message, has_history=has_history, system=system),
+                "state_schema_version": CURRENT_STATE_SCHEMA_VERSION,
+            },
             config,
         )
         reply, tool_calls = _collect_new_response(
@@ -164,19 +250,30 @@ async def stream_chat(
     system: str | None = None,
     user_id: str | None = None,
     on_completed: ChatCompletedCallback | None = None,
+    on_state_reset: StateResetCallback | None = None,
 ) -> AsyncIterator[ChatStreamEvent]:
     """Yield model text chunks, followed by the completed response metadata."""
     thread_id = thread_id or str(uuid.uuid4())
     config = _chat_config(thread_id, user_id)
     async with conversation_locks.acquire(_checkpoint_thread_id(config)):
         graph = get_chat_graph()
-        has_history, previous_message_count = await _get_thread_history(config)
-        inputs = {"messages": _input_messages(message, has_history=has_history, system=system)}
+        has_history, previous_message_count = await _get_thread_history(
+            config,
+            thread_id=thread_id,
+            on_state_reset=on_state_reset,
+        )
+        inputs = {
+            "messages": _input_messages(message, has_history=has_history, system=system),
+            "state_schema_version": CURRENT_STATE_SCHEMA_VERSION,
+        }
 
         async for event in graph.astream_events(inputs, config, version="v2"):
             if event.get("event") != "on_chat_model_stream":
                 continue
-            if event.get("metadata", {}).get("langgraph_node") != "chatbot":
+            if event.get("metadata", {}).get("langgraph_node") not in {
+                "main_agent",
+                "chatbot",  # Compatibility with lightweight test/fake graphs.
+            }:
                 continue
 
             chunk = event.get("data", {}).get("chunk")
@@ -211,12 +308,24 @@ async def confirm_web_access(
     approved: bool,
     user_id: str | None = None,
     on_completed: ChatCompletedCallback | None = None,
+    on_state_reset: StateResetCallback | None = None,
 ) -> ChatResult:
     """Resume a graph paused before web access with the user's decision."""
     config = _chat_config(thread_id, user_id)
     async with conversation_locks.acquire(_checkpoint_thread_id(config)):
         graph = get_chat_graph()
         snapshot = await graph.aget_state(config)
+        values = snapshot.values or {}
+        if (
+            values.get("messages")
+            and values.get("state_schema_version") != CURRENT_STATE_SCHEMA_VERSION
+        ):
+            await _clear_incompatible_state(
+                graph=graph,
+                config=config,
+                thread_id=thread_id,
+                on_state_reset=on_state_reset,
+            )
         if _pending_confirmation(snapshot) is None:
             raise ValueError("当前会话没有待确认的联网请求")
         existing_messages = snapshot.values.get("messages", [])

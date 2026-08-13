@@ -1,31 +1,63 @@
-from langgraph.graph import START, StateGraph
-from langgraph.prebuilt import tools_condition
+from langgraph.graph import END, START, StateGraph
+from langchain_core.runnables import RunnableLambda
 
+from app.agents.contracts import RootState
+from app.agents.executor import (
+    AGENT_EXECUTOR_ERROR_KEY,
+    agent_executor_node,
+    agent_failure_fallback,
+    collect_agent_result_node,
+    route_from_agent_executor,
+)
+from app.agents.registry import build_registered_agents
+from app.agents.supervisor import (
+    main_agent_node,
+    route_from_main_agent,
+)
 from app.core.checkpointer import get_checkpointer
-from app.graph.nodes import chatbot
-from app.graph.state import State
 from app.graph.web_confirmation import tools_with_web_confirmation
 
 
 def build_graph(checkpointer=None):
-    """构建 LangGraph：单 Agent + ToolNode + 条件边。
-
-    演进说明（预留位）：
-    当前保持单 Agent；工具分组在 app.tools.registry 中维护。
-    当工具数量 > 15 或业务域差异明显时，可在此引入 Supervisor 模式：
-      supervisor → (weather_agent | typhoon_agent | search_agent | ...) → END
-    app.graph.router 已预留领域说明，入口不变，只是内部边的路由方式变化。
-    """
+    """Compose main-agent → domain-agent → main-agent orchestration."""
     if checkpointer is None:
         checkpointer = get_checkpointer()
 
-    builder = StateGraph(State)
-    builder.add_node("chatbot", chatbot)
+    agents = build_registered_agents(include_general=False)
+    builder = StateGraph(RootState)
+    builder.add_node("main_agent", main_agent_node)
+    builder.add_node("agent_executor", agent_executor_node)
+    builder.add_node("collect_agent_result", collect_agent_result_node)
     builder.add_node("tools", tools_with_web_confirmation)
-    builder.add_edge(START, "chatbot")
-    builder.add_conditional_edges("chatbot", tools_condition)
-    builder.add_edge("tools", "chatbot")
+    for name, agent_graph in agents.items():
+        safe_agent_graph = agent_graph.with_fallbacks(
+            [RunnableLambda(agent_failure_fallback)],
+            exception_key=AGENT_EXECUTOR_ERROR_KEY,
+        )
+        builder.add_node(f"{name}_agent", safe_agent_graph)
 
+    builder.add_edge(START, "main_agent")
+    builder.add_conditional_edges(
+        "main_agent",
+        route_from_main_agent,
+        {
+            "execute_agent": "agent_executor",
+            "tools": "tools",
+            "done": END,
+        },
+    )
+    builder.add_conditional_edges(
+        "agent_executor",
+        route_from_agent_executor,
+        {
+            **{name: f"{name}_agent" for name in agents},
+            "invalid": "collect_agent_result",
+        },
+    )
+    builder.add_edge("tools", "main_agent")
+    for name in agents:
+        builder.add_edge(f"{name}_agent", "collect_agent_result")
+    builder.add_edge("collect_agent_result", "main_agent")
     return builder.compile(checkpointer=checkpointer)
 
 

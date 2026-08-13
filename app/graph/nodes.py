@@ -24,9 +24,3 @@ def _messages_with_default_system(messages: list) -> list:
 def chatbot(state: State) -> dict:
     messages = _messages_with_default_system(state["messages"])
     return {"messages": [llm_with_tools.invoke(messages)]}
-
-
-# ---- 扩展位：未来 Supervisor 模式 ----
-# def supervisor(state: State) -> dict: ...
-# def weather_agent_node(state: State) -> dict: ...
-# def typhoon_agent_node(state: State) -> dict: ...

@@ -1,5 +1,6 @@
 from app.api.schemas.auth import LoginRequest, LoginResponse
 from app.api.schemas.chat import (
+    AgentErrorResponse,
     ChatConfirmationRequest,
     ChatMessageListResponse,
     ChatMessageResponse,
@@ -24,6 +25,7 @@ from app.api.schemas.users import (
 
 
 __all__ = [
+    "AgentErrorResponse",
     "ChatConfirmationRequest",
     "ChatMessageListResponse",
     "ChatMessageResponse",
@@ -45,4 +47,3 @@ __all__ = [
     "UserResponse",
     "UserRole",
 ]
-

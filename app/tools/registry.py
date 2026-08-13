@@ -1,7 +1,7 @@
 from app.tools.weather.registry import weather_tools
 from app.tools.search.registry import search_tools
 
-# 工具按领域分组，便于后续接入 router/supervisor。
+# 工具按领域分组，供主 Agent 按需调用。
 file_tools = []
 
 tool_groups = {

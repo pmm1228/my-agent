@@ -25,6 +25,7 @@ from app.services.chat_history_service import (
     record_chat_exchange,
 )
 from app.services.chat_service import (
+    AgentConflictError,
     chat,
     confirm_web_access,
     delete_thread_history,
@@ -60,10 +61,11 @@ def _to_chat_message_response(message: ChatMessageRecord) -> ChatMessageResponse
 
 
 async def handle_chat(req: ChatRequest, *, user: UserRecord) -> ChatResponse:
-    history_saved = True
+    history_saved = False
+    history_status = "pending"
 
     async def save_history(result):
-        nonlocal history_saved
+        nonlocal history_saved, history_status
         try:
             await record_chat_exchange(
                 user_id=user.id,
@@ -72,13 +74,19 @@ async def handle_chat(req: ChatRequest, *, user: UserRecord) -> ChatResponse:
                 assistant_reply=result.reply,
                 tool_calls=result.tool_calls,
             )
+            history_saved = True
+            history_status = "saved"
         except Exception:
             history_saved = False
+            history_status = "failed"
             logger.exception(
                 "聊天历史保存失败：user_id=%s thread_id=%s",
                 user.id,
                 result.thread_id,
             )
+
+    async def clear_incompatible_history(thread_id: str) -> bool:
+        return await delete_chat_session(user_id=user.id, thread_id=thread_id)
 
     try:
         result = await chat(
@@ -87,11 +95,12 @@ async def handle_chat(req: ChatRequest, *, user: UserRecord) -> ChatResponse:
             system=req.system,
             user_id=str(user.id),
             on_completed=save_history,
+            on_state_reset=clear_incompatible_history,
         )
     except ConversationLockTimeout as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="当前会话正在处理上一条消息，请稍后重试",
+        raise AgentConflictError(
+            code="conversation_busy",
+            message="当前会话正在处理上一条消息，请稍后重试",
         ) from e
 
     return ChatResponse(
@@ -99,6 +108,7 @@ async def handle_chat(req: ChatRequest, *, user: UserRecord) -> ChatResponse:
         thread_id=result.thread_id,
         tool_calls=result.tool_calls,
         history_saved=history_saved,
+        history_status=history_status,
         status=result.status,
         confirmation=result.confirmation,
     )
@@ -109,10 +119,11 @@ async def handle_chat_confirmation(
     *,
     user: UserRecord,
 ) -> ChatResponse:
-    history_saved = True
+    history_saved = False
+    history_status = "pending"
 
     async def save_history(result):
-        nonlocal history_saved
+        nonlocal history_saved, history_status
         try:
             await record_chat_exchange(
                 user_id=user.id,
@@ -121,13 +132,19 @@ async def handle_chat_confirmation(
                 assistant_reply=result.reply,
                 tool_calls=result.tool_calls,
             )
+            history_saved = True
+            history_status = "saved"
         except Exception:
             history_saved = False
+            history_status = "failed"
             logger.exception(
                 "确认联网后的聊天历史保存失败：user_id=%s thread_id=%s",
                 user.id,
                 result.thread_id,
             )
+
+    async def clear_incompatible_history(thread_id: str) -> bool:
+        return await delete_chat_session(user_id=user.id, thread_id=thread_id)
 
     try:
         result = await confirm_web_access(
@@ -135,13 +152,19 @@ async def handle_chat_confirmation(
             approved=req.approved,
             user_id=str(user.id),
             on_completed=save_history,
+            on_state_reset=clear_incompatible_history,
         )
+    except AgentConflictError:
+        raise
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise AgentConflictError(
+            code="no_pending_confirmation",
+            message=str(exc),
+        ) from exc
     except ConversationLockTimeout as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="当前会话正在处理上一条消息，请稍后重试",
+        raise AgentConflictError(
+            code="conversation_busy",
+            message="当前会话正在处理上一条消息，请稍后重试",
         ) from exc
 
     return ChatResponse(
@@ -149,6 +172,7 @@ async def handle_chat_confirmation(
         thread_id=result.thread_id,
         tool_calls=result.tool_calls,
         history_saved=history_saved,
+        history_status=history_status,
         status=result.status,
         confirmation=result.confirmation,
     )
@@ -156,10 +180,11 @@ async def handle_chat_confirmation(
 
 async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> StreamingResponse:
     async def generate():
-        history_saved = True
+        history_saved = False
+        history_status = "pending"
 
         async def save_history(result):
-            nonlocal history_saved
+            nonlocal history_saved, history_status
             try:
                 await record_chat_exchange(
                     user_id=user.id,
@@ -168,13 +193,19 @@ async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> Streaming
                     assistant_reply=result.reply,
                     tool_calls=result.tool_calls,
                 )
+                history_saved = True
+                history_status = "saved"
             except Exception:
                 history_saved = False
+                history_status = "failed"
                 logger.exception(
                     "聊天历史保存失败：user_id=%s thread_id=%s",
                     user.id,
                     result.thread_id,
                 )
+
+        async def clear_incompatible_history(thread_id: str) -> bool:
+            return await delete_chat_session(user_id=user.id, thread_id=thread_id)
 
         try:
             async for event in stream_chat(
@@ -183,6 +214,7 @@ async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> Streaming
                 system=req.system,
                 user_id=str(user.id),
                 on_completed=save_history,
+                on_state_reset=clear_incompatible_history,
             ):
                 if event.type == "token":
                     yield json.dumps(
@@ -201,20 +233,20 @@ async def handle_chat_stream(req: ChatRequest, *, user: UserRecord) -> Streaming
                         "thread_id": result.thread_id,
                         "tool_calls": result.tool_calls,
                         "history_saved": history_saved,
+                        "history_status": history_status,
                         "status": result.status,
                         "confirmation": result.confirmation,
                     },
                     ensure_ascii=False,
                 ) + "\n"
+        except AgentConflictError as exc:
+            yield json.dumps(exc.as_dict(), ensure_ascii=False) + "\n"
         except ConversationLockTimeout:
-            yield json.dumps(
-                {
-                    "type": "error",
-                    "code": "conversation_busy",
-                    "message": "当前会话正在处理上一条消息，请稍后重试",
-                },
-                ensure_ascii=False,
-            ) + "\n"
+            error = AgentConflictError(
+                code="conversation_busy",
+                message="当前会话正在处理上一条消息，请稍后重试",
+            )
+            yield json.dumps(error.as_dict(), ensure_ascii=False) + "\n"
         except Exception:
             logger.exception("流式聊天失败：user_id=%s", user.id)
             yield json.dumps(
@@ -299,9 +331,9 @@ async def handle_delete_chat_session(
             detail="数据库未配置，无法删除聊天会话",
         ) from e
     except ConversationLockTimeout as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="当前会话正在处理，暂时无法删除",
+        raise AgentConflictError(
+            code="conversation_busy",
+            message="当前会话正在处理，暂时无法删除",
         ) from e
 
     if not deleted:

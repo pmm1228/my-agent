@@ -47,6 +47,8 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_API_KEY: ${ADMIN_API_KEY}
       HTTP_TIMEOUT: ${HTTP_TIMEOUT:-15}
+      # Docker Desktop 通过 198.18.0.0/15 的用户态代理访问公网；其他保留/内网段仍拒绝。
+      WEB_ALLOWED_PROXY_CIDRS: ${WEB_ALLOWED_PROXY_CIDRS:-198.18.0.0/15}
       API_HOST: 0.0.0.0
       API_PORT: "8000"
     healthcheck:

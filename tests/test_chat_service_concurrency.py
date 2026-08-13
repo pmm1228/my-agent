@@ -1,20 +1,31 @@
 import asyncio
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.core.conversation_lock import ConversationLockManager
+from app.agents.contracts import CURRENT_STATE_SCHEMA_VERSION
 from app.services import chat_service
 
 class _FakeGraph:
     def __init__(self):
         self.messages = []
+        self.interrupts = ()
+        self.invoke_count = 0
+        self.state_schema_version = CURRENT_STATE_SCHEMA_VERSION
         self.checkpointer = self
 
     async def aget_state(self, _config):
-        return SimpleNamespace(values={"messages": list(self.messages)})
+        return SimpleNamespace(
+            values={
+                "messages": list(self.messages),
+                "state_schema_version": self.state_schema_version,
+            },
+            interrupts=self.interrupts,
+        )
 
     async def ainvoke(self, inputs, _config):
+        self.invoke_count += 1
         await asyncio.sleep(0)
         self.messages.extend(inputs["messages"])
         user_message = inputs["messages"][-1]["content"]
@@ -90,6 +101,53 @@ class ChatServiceConcurrencyTests(unittest.IsolatedAsyncioTestCase):
             order,
             ["first-history-start", "first-history-end", "second-history"],
         )
+
+    async def test_new_chat_does_not_replace_pending_confirmation(self):
+        self.graph.interrupts = (
+            SimpleNamespace(value={"type": "web_confirmation", "message": "允许联网？"}),
+        )
+
+        with self.assertRaises(chat_service.PendingConfirmationError):
+            await chat_service.chat(
+                "忽略上一个请求",
+                thread_id="shared",
+                user_id="user-1",
+            )
+
+        self.assertEqual(self.graph.invoke_count, 0)
+
+    async def test_new_stream_does_not_replace_pending_confirmation(self):
+        self.graph.interrupts = (
+            SimpleNamespace(value={"type": "web_confirmation", "message": "允许联网？"}),
+        )
+
+        with self.assertRaises(chat_service.PendingConfirmationError):
+            async for _ in chat_service.stream_chat(
+                "忽略上一个请求",
+                thread_id="shared",
+                user_id="user-1",
+            ):
+                pass
+
+        self.assertEqual(self.graph.invoke_count, 0)
+
+    async def test_legacy_checkpoint_is_cleared_before_new_turn(self):
+        self.graph.messages = [SimpleNamespace(content="旧旅行状态")]
+        self.graph.state_schema_version = None
+        reset_history = AsyncMock(return_value=True)
+
+        with self.assertRaises(chat_service.WorkflowResetRequiredError) as raised:
+            await chat_service.chat(
+                "2个人",
+                thread_id="shared",
+                user_id="user-1",
+                on_state_reset=reset_history,
+            )
+
+        self.assertEqual(self.graph.messages, [])
+        self.assertEqual(self.graph.invoke_count, 0)
+        reset_history.assert_awaited_once_with("shared")
+        self.assertTrue(raised.exception.details["history_cleared"])
 
     async def test_stream_done_is_yielded_after_lock_release(self):
         stream = chat_service.stream_chat(

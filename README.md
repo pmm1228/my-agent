@@ -1,12 +1,14 @@
 # My-Agent
 
-基于 **LangGraph + FastAPI + Streamlit** 的多工具 Agent。
+基于 **LangGraph + FastAPI + Streamlit** 的主从式多 Agent 应用。
 
 ## 特性
 
 - 🔧 **工具可插拔**：新增工具只需在 `app/tools/` 下创建文件 + `registry.py` 注册
 - 🔎 **按需联网**：Tavily 搜索 + 公开网页正文读取，仅在实时信息或外部查证确有必要时调用
-- 🤖 **LangGraph 工作流**：单 Agent → 多 Agent Supervisor 平滑演进
+- 🧳 **旅游规划工作流**：收集目的地、日期和人数，一次确认后搜索景点与酒店，并生成天气、每日行程、预算区间和备选项
+- 🤖 **主从式 Agent 编排**：主 Agent 创建 `AgentCall`，Executor 调用领域子 Agent，结果回到主 Agent 统一综合输出
+- 🧯 **Agent 失败降级**：子 Agent 普通异常转换为失败 `AgentResult`；最终综合模型不可用时使用结构化结果降级回复
 - 💾 **会话持久化**：MemorySaver（开发）/ AsyncPostgresSaver（生产）可切换
 - 🧾 **永久聊天历史**：业务表保存会话和消息，便于分页展示 / 审计
 - 🌐 **FastAPI 接口**：提供 `/chat` 和 `/health`
@@ -25,7 +27,8 @@ my-agent/
 ├── .env                       # 环境变量（已 .gitignore）
 │
 ├── scripts/                   # 运维 / 验证脚本
-│   └── test_memory_pgvector.py
+│   ├── init_database.py       # 幂等初始化与显式会话重置
+│   └── test_memory_pgvector.py # pgvector 存储和隔离验证
 │
 └── app/
     ├── core/                  # 基础设施（不依赖上层）
@@ -42,18 +45,28 @@ my-agent/
     │
     ├── tools/                 # 所有工具
     │   ├── registry.py        # 按领域组合 all_tools / tool_groups
+    │   ├── search/            # Tavily 搜索与安全网页正文读取
     │   └── weather/
     │       ├── current.py     # get_weather（Open-Meteo）
+    │       ├── forecast.py    # 旅行日期天气预报
     │       ├── typhoon.py     # get_typhoon（中央气象台）
     │       ├── codes.py       # Open-Meteo 天气码映射
     │       └── registry.py    # weather_tools
     │
-    ├── graph/                 # LangGraph 层
-    │   ├── state.py           # State TypedDict
+    ├── agents/                # 主 Agent 协调器、Executor 与领域 Agent
+    │   ├── contracts.py       # AgentCall / AgentResult / RootState / AgentSpec
+    │   ├── executor.py        # 校验 AgentCall、失败转换、结果归一化
+    │   ├── registry.py        # Agent 注册表
+    │   ├── supervisor/        # 主 Agent 路由、协调、结果综合和发布
+    │   ├── general/           # 兼容保留的通用子图；当前根图不注册它
+    │   └── travel/            # 自包含旅游 Agent：状态、节点、抽取、规划和渲染
+    │
+    ├── graph/                 # 根编排图与主 Agent 的普通工具链
+    │   ├── state.py           # RootState 兼容导出
     │   ├── prompts.py         # SYSTEM_PROMPT
-    │   ├── nodes.py           # chatbot 节点 + Supervisor 扩展位
-    │   ├── router.py          # 未来领域路由 / Supervisor 预留
-    │   └── builder.py         # build_graph() 组装工作流
+    │   ├── nodes.py           # 主 Agent 的 LLM + 普通工具绑定
+    │   ├── web_confirmation.py # 普通工具执行与 Tavily 调用确认
+    │   └── builder.py         # 组装主 Agent、Executor、工具和子图循环
     │
     ├── api/                   # FastAPI 层
     │   ├── main.py            # FastAPI app 工厂
@@ -97,9 +110,11 @@ cat .env
 | `TAVILY_API_KEY` | — | Tavily 搜索密钥；启用通用联网搜索时必填 |
 | `WEB_SEARCH_MAX_RESULTS` | `5` | 单次联网搜索允许返回的最大结果数（1–10） |
 | `WEB_PAGE_MAX_BYTES` | `1000000` | 单个网页最多处理的字节数 |
+| `WEB_ALLOWED_PROXY_CIDRS` | 空 | 允许作为公网传输代理的保留地址段；Docker Desktop compose 默认配置 `198.18.0.0/15` |
 | `CHECKPOINTER_TYPE` | `memory` | `memory`（进程内）或 `postgres`（持久化到 PostgreSQL） |
 | `POSTGRES_URL` | — | PostgreSQL 连接串，启用 `postgres` checkpointer 时必填 |
 | `DATABASE_URL` | `POSTGRES_URL` | 用户权限表连接串；不配置时复用 `POSTGRES_URL` |
+| `CONVERSATION_LOCK_TIMEOUT_SECONDS` | `30` | 同一进程等待相同会话锁的最大秒数 |
 | `ADMIN_USERNAME` | `admin` | 启动时自动创建/更新的管理员用户名 |
 | `ADMIN_PASSWORD` | — | 管理员登录密码；全新数据库首次启动必填 |
 | `JWT_SECRET` | `ADMIN_API_KEY` 或本地默认值 | Bearer Token 签名密钥，生产环境请显式配置 |
@@ -154,7 +169,7 @@ curl -X POST http://localhost:8000/chat \
   -H "Authorization: Bearer 你的 access_token" \
   -H "Content-Type: application/json" \
   -d '{"message": "查下深圳今天天气"}'
-# → {"reply": "...", "thread_id": "xxx", "tool_calls": [...], "history_saved": true}
+# → {"reply": "...", "thread_id": "xxx", "tool_calls": [...], "history_saved": true, "history_status": "saved"}
 
 # 带 thread_id 保持会话
 curl -X POST http://localhost:8000/chat \
@@ -187,6 +202,33 @@ curl -X DELETE http://localhost:8000/users/用户ID \
   -H "Authorization: Bearer 管理员 access_token"
 ```
 
+## 旅游规划工作流
+
+明确提出“旅行规划”“几日游”“旅游攻略”等请求时，主 Agent 会将本轮交给独立
+Travel Agent 子图：
+
+1. 收集并校验目的地、出发日期、返程日期和人数。
+2. 生成景点与酒店研究计划，并通过现有 `/chat/confirm` 一次性确认 Tavily 调用。
+3. 从搜索摘要中抽取有直接证据的具体景点和酒店；候选不足时读取少量必要页面，攻略标题不会直接成为行程地点。
+4. 查询 Open-Meteo 天气；天气或部分搜索失败时继续生成降级方案。
+5. 按搜索资料中可识别的行政区或商圈组织每日活动，根据实际活动、住宿和用户预算计算费用区间。
+6. 输出每日备选项、来源与未核实事项。
+
+候选名称、类型和目的地必须在同一段直接证据中建立关联；区域、地址、开放时间和价格也必须
+与候选名称位于同一句来源原文，否则不会用于排程或预算。位置未核实的候选不会被假定为相邻。
+完成规划后，可在已有核实候选中按天增加、删除或替换活动，也可修改预算、人数、房间数、
+节奏和酒店档次；本地修改不会重复消耗 Tavily 配额，修改失败时原方案保持不变。
+已有旅行上下文中单独发送“重新规划”会清空旧旅行字段并开始一份新方案。
+
+Travel Agent 使用独立的子图 checkpoint namespace。旅行收集过程中插入普通问题时，会临时
+handoff 回主 Agent，由主 Agent 直接回答，完成后仍可继续原旅行；Travel Agent 内部产生的
+Tavily interrupt 由根图透明传递，现有 `/chat/confirm` 接口无需区分具体 Agent。子 Agent
+完成后先返回结构化 `AgentResult`，主 Agent 再综合其中的方案、警告和错误并生成用户可见回复。
+
+酒店价格、门票、餐饮和交通均为参考区间，不代表实时库存或最终成交价。预算输出会分别标记
+“费用完整性”和“超预算风险”，即使部分价格缺失，也会根据已有依据识别明显超支并尝试调整；
+超出可靠预报范围的日期不会生成虚假逐日天气。
+
 ## 如何添加新工具
 
 ### 方式 A：最小改动
@@ -217,26 +259,102 @@ all_tools = [*weather_tools, *my_tools]
 
 参考 `app/tools/weather/typhoon.py` 的结构——内部函数调数据源，`@tool` 函数做参数校验 + 结果格式化。数据源 HTTP 请求统一走 `app/utils/http.py` 的 `http_client()` 上下文管理器。
 
-## 架构演进
+## Agent 架构
 
+当前根图的实际执行链：
+
+```text
+START
+  ↓
+main_agent
+  ├─ 普通回答 ───────────────────────────────────────→ END
+  ├─ 普通 Tool Call → tools ─────────────────────────→ main_agent
+  └─ AgentCall → agent_executor → domain_agent
+                                   ↓
+                         collect_agent_result
+                                   ↓
+                              main_agent
+                        （综合并发布最终回复）
+                                   ↓
+                                  END
 ```
-阶段 1（当前）：单 Agent + 多工具
-  START → chatbot → (tools) → chatbot → END
 
-阶段 2：Supervisor 多 Agent
-  START → supervisor ┬─→ weather_agent → END
-                     ├─→ typhoon_agent  → END
-                     └─→ search_agent  → END
+根图包含以下节点：
 
-阶段 3：多 Agent + 共享状态 + 记忆
-  各子 Agent 独立 graph，通过 Supervisor 协调，共用 checkpoint
+| 节点 | 职责 |
+|---|---|
+| `main_agent` | 判断本轮由主 Agent 直接处理还是委派领域 Agent；接收结果后生成唯一的最终回复 |
+| `tools` | 执行天气、台风、搜索、网页读取等普通 LangChain Tool；Tavily 搜索前触发确认 |
+| `agent_executor` | 消费并校验 `AgentCall`，根据注册表把调用派发给对应领域子图 |
+| `<name>_agent` | 执行领域工作流；当前注册到根图的是 `travel_agent` |
+| `collect_agent_result` | 规范化子 Agent 输出、附加 `call_id`、累积 `agent_results`，再把控制权交还主 Agent |
+
+### 两类调用通道
+
+系统明确区分普通工具和领域 Agent：
+
+- 普通工具使用模型原生 Tool Call 和 LangGraph `ToolNode`，适合短时、无独立工作流的天气或搜索能力。
+- 领域 Agent 使用项目内部的 `AgentCall → Agent Executor → AgentResult` 协议，适合拥有私有状态、多个步骤和 interrupt 的工作流。
+
+因此，领域 Agent 在架构语义上作为主 Agent 的工具，但不会伪装成普通 `ToolNode`。这样 Travel
+Agent 可以继续持有独立 checkpoint namespace，并让联网确认中断穿过 Executor 后正常恢复。
+
+### 调度和结果综合
+
+注册的领域路由器返回 `RouteDecision`。协调器先区分本轮明确意图 `explicit` 和活跃工作流续办
+`continuation`：明确意图优先，其次比较得分和 Agent 优先级；没有领域 Agent 达到阈值或出现
+无法消解的冲突时，由主 Agent 直接处理。
+
+子 Agent 统一返回：
+
+```python
+AgentResult = {
+    "agent": "travel",
+    "status": "active | completed | cancelled | failed",
+    "summary": "供主 Agent 理解的结果摘要",
+    "data": {},
+    "warnings": [],
+    "errors": [],
+    "call_id": "对应 AgentCall 的 ID",
+}
 ```
 
-演进时只改 `app/graph/builder.py` 和 `app/graph/nodes.py`，**外部接口（CLI / API）零改动**。
+主 Agent 会将当前收集到的 `summary`、`data`、`warnings` 和 `errors` 一起交给综合模型，生成一条
+用户可见回复。综合失败时，系统使用结构化摘要、警告和错误生成降级回复。领域子图产生的内部
+AI 消息会在最终发布前从本轮根消息中移除，避免把子 Agent 中间输出重复展示给用户。
+
+子 Agent 的普通异常会被 Executor 转换为 `status=failed` 的 `AgentResult`，再由主 Agent 解释；
+LangGraph 的 interrupt 不会被当成失败捕获。会话存在待确认联网请求时，普通 `/chat` 和
+`/chat/stream` 请求会返回 `pending_confirmation` 冲突，必须先调用 `/chat/confirm` 确认或拒绝。
+
+> 当前根状态版本为 `4`。旧 checkpoint 不做迁移；首次访问时会清除对应 checkpoint，并返回
+> `workflow_reset_required`。通过 HTTP API 访问时还会同步清除当前用户对应的业务会话历史；
+> 直接调用 Service 且未提供 `on_state_reset` 回调时只清除 checkpoint。
+
+### 添加新的领域 Agent
+
+1. 在 `app/agents/<name>/` 创建独立 StateGraph；领域字段放在自己的 State 中，不加入 `RootState`。
+2. 子图退出节点必须投影统一的 `AgentResult`，并设置必要的 `workflow_agent`、`workflow_status`。
+3. 实现 `router(state) -> RouteDecision`，明确区分新请求和活跃工作流续办。
+4. 在 `app/agents/registry.py` 注册 `AgentSpec`。根图会自动添加 `<name>_agent` 和 Executor 路由。
+5. 需要跨轮私有状态时以 `checkpointer=True` 编译子图；需要用户确认时使用 LangGraph `interrupt`。
+6. 至少测试成功、缺少输入、普通异常、interrupt 恢复、跨轮续办和主 Agent 最终综合。
+
+普通问答和通用工具不需要创建领域 Agent，由主 Agent 直接处理。`app/agents/general/` 目前仅为
+兼容保留，不会注册进根图。
+
+### 当前边界
+
+- 当前唯一注册到根图的领域子 Agent 是 `travel_agent`。
+- 领域选择目前由可测试的 `RouteDecision` 路由器完成，不是由 LLM 自由生成领域 Agent Tool Call。
+- Executor 已支持最多 3 轮领域 handoff 和多个 `AgentResult` 的累积综合；当前 Travel 流程通常每轮只调用一个领域 Agent。
+- 单轮主动拆解任务并并行或串行组合多个领域 Agent 尚未实现。
 
 ## 数据库
 
-项目使用 **PostgreSQL 16 + pgvector 0.8**，会话持久化和长期记忆共用同一个数据库实例。
+项目使用 **PostgreSQL 16 + pgvector 0.8**。默认可共用同一个实例，也支持通过
+`DATABASE_URL` 和 `POSTGRES_URL` 分离业务历史与 LangGraph checkpoint；删除用户和重置会话时
+会分别清理两个存储。
 
 ### 启动方式
 
@@ -318,6 +436,24 @@ volumes:
 
 `app_users` 在 API 启动时创建。用户通过 `POST /auth/login` 使用用户名密码登录，后续接口使用 `Authorization: Bearer <token>`；数据库只保存密码哈希。兼容旧版 API Key 鉴权，新增用户或重置 Key 时，明文 Key 只会在响应中返回一次。删除用户会级联删除业务聊天历史，并清理该用户命名空间下的 LangGraph checkpoint。
 
+业务表和 checkpoint 表可显式初始化；清空命令只删除聊天会话与 checkpoint，保留用户、
+角色、鉴权信息和长期记忆：
+
+```bash
+# 幂等初始化/迁移
+python scripts/init_database.py
+
+# 明确确认后重置会话与 checkpoint
+# 执行前请先停止所有会写入这些数据库的 API 实例
+python scripts/init_database.py \
+  --reset-conversations \
+  --confirm-reset RESET-CONVERSATIONS
+```
+
+业务历史通过 `DATABASE_URL` 清理，checkpoint 通过 `POSTGRES_URL` 独立清理，因此支持分库部署。
+重置默认仅允许本机数据库；任一目标为非本机时还必须显式传入 `--allow-remote`。应用启动只执行
+幂等建表和迁移，不会自动清空数据。
+
 ### 验证脚本
 
 `scripts/test_memory_pgvector.py` 会自动创建 `vector` 扩展、`memory_entries` 表和索引，并验证 pgvector 存储、相似度排序、用户隔离是否正常：
@@ -333,6 +469,7 @@ python scripts/test_memory_pgvector.py
 | LLM | DeepSeek / OpenAI 兼容协议 |
 | Agent 编排 | LangGraph 0.2+ |
 | 工具定义 | LangChain Tool 协议 |
+| 领域 Agent 协议 | 内部 `AgentCall` / `AgentResult` + Agent Executor |
 | API | FastAPI + Uvicorn |
 | UI | Streamlit |
 | 会话持久化 | LangGraph Checkpoint（Memory / AsyncPostgresSaver + psycopg_pool） |
@@ -345,15 +482,19 @@ python scripts/test_memory_pgvector.py
 
 - [x] 模块化包结构
 - [x] 工具注册机制
-- [x] LangGraph 单 Agent + ToolNode
+- [x] LangGraph 主 Agent + ToolNode + 领域子 Agent
 - [x] FastAPI 层（/chat, /health）
 - [x] Streamlit 聊天界面
 - [x] Memory / Postgres Checkpointer 工厂（AsyncPostgresSaver + psycopg_pool）
 - [x] Service 层复用 CLI / API / UI
 - [x] 工具按领域分组
-- [x] Supervisor 扩展位预留
+- [x] 主 Agent → 子 Agent → 主 Agent 编排循环
+- [x] Agent Executor 调用校验、结果归一化和失败转换
+- [x] 主 Agent 结构化结果综合与降级输出
+- [x] Travel Agent 私有 checkpoint 与 interrupt 恢复
 - [x] Docker Compose + pgvector 数据库
 - [x] memory_entries 表结构 + pgvector 验证脚本
-- [ ] Supervisor 多 Agent 实现（工具 > 15 或业务域差异大时）
+- [x] 自动化测试（当前 116 项）
+- [ ] 增加更多领域子 Agent，并支持单轮组合调用
 - [ ] 长期记忆提取 + embedding 模块
-- [ ] 单元测试 + 集成测试
+- [ ] 外部 LLM、Tavily、Open-Meteo 和 PostgreSQL 的在线集成测试

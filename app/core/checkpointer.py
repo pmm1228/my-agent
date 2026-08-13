@@ -6,6 +6,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from app.core.config import get_settings
 
 
+async def _close_pool_safely(pool) -> None:
+    try:
+        await pool.close()
+    except Exception:
+        pass
+
+
 class _PostgresCheckpointerProxy(BaseCheckpointSaver):
     def __init__(self, conn_string: str):
         super().__init__()
@@ -28,9 +35,13 @@ class _PostgresCheckpointerProxy(BaseCheckpointSaver):
                 open=False,
                 kwargs={"autocommit": True},
             )
-            await pool.open()
-            saver = AsyncPostgresSaver(pool)
-            await saver.setup()
+            try:
+                await pool.open()
+                saver = AsyncPostgresSaver(pool)
+                await saver.setup()
+            except Exception:
+                await _close_pool_safely(pool)
+                raise
             self._pool = pool
             self._saver = saver
             return saver
@@ -42,6 +53,9 @@ class _PostgresCheckpointerProxy(BaseCheckpointSaver):
             self._saver = None
             if pool is not None:
                 await pool.close()
+
+    async def asetup(self):
+        await self._ensure_saver()
 
     async def aget_tuple(self, config):
         saver = await self._ensure_saver()
@@ -105,3 +119,115 @@ def get_checkpointer() -> BaseCheckpointSaver:
         ) from e
 
     return _PostgresCheckpointerProxy(s.POSTGRES_URL)
+
+
+def get_checkpoint_database_url() -> str:
+    return get_settings().POSTGRES_URL
+
+
+async def init_checkpointer_storage() -> bool:
+    """Create or migrate persistent checkpoint tables when PostgreSQL is enabled."""
+    if get_settings().CHECKPOINTER_TYPE != "postgres":
+        return False
+
+    checkpointer = get_checkpointer()
+    try:
+        setup = getattr(checkpointer, "asetup", None)
+        if setup is not None:
+            await setup()
+        return True
+    finally:
+        close = getattr(checkpointer, "aclose", None)
+        if close is not None:
+            await close()
+
+
+async def reset_checkpoint_data() -> dict[str, int]:
+    """Clear LangGraph checkpoint rows using POSTGRES_URL directly."""
+    conn_string = get_checkpoint_database_url()
+    if not conn_string:
+        return {}
+
+    try:
+        from psycopg.rows import dict_row
+        from psycopg_pool import AsyncConnectionPool
+    except ImportError as exc:
+        raise RuntimeError(
+            "重置 checkpoint 需要安装 psycopg_pool 和 psycopg[binary]"
+        ) from exc
+
+    tables = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
+    pool = AsyncConnectionPool(
+        conn_string,
+        open=False,
+        kwargs={"autocommit": True, "row_factory": dict_row},
+    )
+    try:
+        await pool.open()
+        cleared: dict[str, int] = {}
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                existing = []
+                for table_name in tables:
+                    cur = await conn.execute(
+                        "SELECT to_regclass(%s) AS table_name",
+                        (f"public.{table_name}",),
+                    )
+                    row = await cur.fetchone()
+                    if not row or row["table_name"] is None:
+                        continue
+                    existing.append(table_name)
+                    cur = await conn.execute(
+                        f"SELECT COUNT(*) AS count FROM {table_name}"
+                    )
+                    cleared[table_name] = (await cur.fetchone())["count"]
+                if existing:
+                    await conn.execute(f"TRUNCATE TABLE {', '.join(existing)}")
+        return cleared
+    finally:
+        await _close_pool_safely(pool)
+
+
+async def delete_user_checkpoint_data(user_id: str) -> None:
+    """Delete all persistent checkpoint rows owned by one user."""
+    settings = get_settings()
+    conn_string = get_checkpoint_database_url()
+    if settings.CHECKPOINTER_TYPE != "postgres" or not conn_string:
+        return
+
+    try:
+        from psycopg.rows import dict_row
+        from psycopg_pool import AsyncConnectionPool
+    except ImportError as exc:
+        raise RuntimeError(
+            "删除用户 checkpoint 需要安装 psycopg_pool 和 psycopg[binary]"
+        ) from exc
+
+    pool = AsyncConnectionPool(
+        conn_string,
+        open=False,
+        kwargs={"autocommit": True, "row_factory": dict_row},
+    )
+    prefix = f"user:{user_id}:thread:%"
+    try:
+        await pool.open()
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                for table_name in (
+                    "checkpoint_writes",
+                    "checkpoint_blobs",
+                    "checkpoints",
+                ):
+                    cur = await conn.execute(
+                        "SELECT to_regclass(%s) AS table_name",
+                        (f"public.{table_name}",),
+                    )
+                    row = await cur.fetchone()
+                    if not row or row["table_name"] is None:
+                        continue
+                    await conn.execute(
+                        f"DELETE FROM {table_name} WHERE thread_id LIKE %s",
+                        (prefix,),
+                    )
+    finally:
+        await _close_pool_safely(pool)

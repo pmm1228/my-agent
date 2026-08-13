@@ -3,15 +3,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.errors import agent_conflict_exception_handler
 from app.api.routers import auth, chat, system, users
+from app.core.checkpointer import init_checkpointer_storage
 from app.core.database import close_database, init_database
-from app.services.chat_service import close_resources
+from app.services.chat_service import AgentConflictError, close_resources
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
         await init_database()
+        await init_checkpointer_storage()
         yield
     finally:
         await close_database()
@@ -49,6 +52,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_exception_handler(AgentConflictError, agent_conflict_exception_handler)
 
     app.include_router(system.router)
     app.include_router(auth.router)

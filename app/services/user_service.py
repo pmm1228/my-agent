@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Literal
 
 from app.core.database import DatabaseNotConfigured, db_connection
+from app.core.checkpointer import delete_user_checkpoint_data
 from app.core.security import generate_api_key, hash_api_key, hash_password, verify_password
 
 
@@ -54,26 +55,6 @@ def _row_to_user(row) -> UserRecord:
 
 def _is_unique_violation(exc: Exception) -> bool:
     return getattr(exc, "sqlstate", None) == "23505"
-
-
-async def _table_exists(conn, table_name: str) -> bool:
-    cur = await conn.execute(
-        "SELECT to_regclass(%s) AS table_name",
-        (f"public.{table_name}",),
-    )
-    row = await cur.fetchone()
-    return row["table_name"] is not None
-
-
-async def _delete_user_checkpoints(conn, user_id: uuid.UUID) -> None:
-    checkpoint_prefix = f"user:{user_id}:thread:%"
-    for table_name in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
-        if not await _table_exists(conn, table_name):
-            continue
-        await conn.execute(
-            f"DELETE FROM {table_name} WHERE thread_id LIKE %s",
-            (checkpoint_prefix,),
-        )
 
 
 async def _lock_user_admin_guard(conn) -> None:
@@ -210,7 +191,7 @@ async def delete_user(user_id: uuid.UUID) -> UserRecord:
                 if active_admin_count <= 1:
                     raise CannotDeleteLastAdmin("不能删除最后一个活跃管理员")
 
-            await _delete_user_checkpoints(conn, user_id)
+            await delete_user_checkpoint_data(str(user_id))
             cur = await conn.execute(
                 """
                 DELETE FROM app_users

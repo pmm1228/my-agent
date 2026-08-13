@@ -10,6 +10,7 @@ from app.api.handlers.chat import (
     handle_list_chat_sessions,
 )
 from app.api.schemas.chat import (
+    AgentErrorResponse,
     ChatConfirmationRequest,
     ChatMessageListResponse,
     ChatRequest,
@@ -32,6 +33,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
         "需要有效的 Authorization Bearer Token。"
     ),
     response_model=ChatResponse,
+    responses={409: {"model": AgentErrorResponse, "description": "会话状态冲突"}},
 )
 async def chat(
     req: ChatRequest,
@@ -45,6 +47,7 @@ async def chat(
     summary="确认或拒绝联网",
     description="恢复一个因联网工具调用而暂停的会话。",
     response_model=ChatResponse,
+    responses={409: {"model": AgentErrorResponse, "description": "确认状态冲突"}},
 )
 async def confirm_chat_web_access(
     req: ChatConfirmationRequest,
@@ -104,6 +107,7 @@ async def list_chat_messages(
     summary="删除聊天会话",
     description="删除当前用户的指定聊天会话、消息及 Agent 上下文。",
     response_model=ChatSessionDeleteResponse,
+    responses={409: {"model": AgentErrorResponse, "description": "会话正在处理中"}},
 )
 async def delete_chat_session(
     thread_id: str,

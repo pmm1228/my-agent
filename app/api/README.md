@@ -141,7 +141,8 @@ curl -s -X POST http://localhost:8000/chat \
 | `reply` | string | Agent 最终回复文本 |
 | `thread_id` | string | 本次会话 ID（用于后续多轮对话） |
 | `tool_calls` | array | 本次调用的工具列表（可能为空） |
-| `history_saved` | boolean | 聊天业务历史是否成功保存 |
+| `history_saved` | boolean | 聊天业务历史是否已经成功保存；待确认时为 `false` |
+| `history_status` | string | `saved`、`pending` 或 `failed` |
 
 **tool_calls 元素**：
 
@@ -157,6 +158,7 @@ curl -s -X POST http://localhost:8000/chat \
   "reply": "深圳今天多云，气温 26-32°C，降水概率较低。",
   "thread_id": "7a5d613e193a...",
   "history_saved": true,
+  "history_status": "saved",
   "tool_calls": [
     {"name": "get_weather", "args": {"city": "深圳"}}
   ]
@@ -170,6 +172,7 @@ curl -s -X POST http://localhost:8000/chat \
   "reply": "你好！有什么可以帮你的吗？",
   "thread_id": "99e3c1d4252...",
   "history_saved": true,
+  "history_status": "saved",
   "tool_calls": []
 }
 ```
@@ -247,6 +250,12 @@ POSTGRES_URL=postgresql://user:pass@host:5432/myagent
 ```
 
 AsyncPostgresSaver 首次启动时自动建表（`checkpoints`、`checkpoint_blobs`、`checkpoint_writes`、`checkpoint_migrations`）。
+
+如果会话 checkpoint 来自不兼容的旧状态版本，普通接口返回 HTTP 409，流式接口返回
+`workflow_reset_required`；旧 checkpoint 和对应业务聊天历史会被清除，用户重新发送完整需求
+即可。存在待确认的联网请求时返回 `pending_confirmation`，必须先调用 `/chat/confirm`。
+普通与流式冲突都使用 `type`、`code`、`message`、`details` 字段；联网确认信息位于
+`details.confirmation`。
 
 ---
 

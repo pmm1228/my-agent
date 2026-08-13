@@ -19,8 +19,16 @@ class ChatResponse(BaseModel):
     thread_id: str
     tool_calls: list[dict] = Field(default_factory=list)
     history_saved: bool = True
+    history_status: Literal["saved", "pending", "failed"] = "saved"
     status: Literal["completed", "requires_confirmation"] = "completed"
     confirmation: dict | None = None
+
+
+class AgentErrorResponse(BaseModel):
+    type: Literal["error"] = "error"
+    code: str
+    message: str
+    details: dict = Field(default_factory=dict)
 
 
 class ChatConfirmationRequest(BaseModel):
@@ -60,4 +68,3 @@ class ChatMessageListResponse(BaseModel):
     session: ChatSessionResponse
     items: list[ChatMessageResponse]
     total: int
-
