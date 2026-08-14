@@ -1,2 +1,1 @@
-"""Domain agents composed by the root supervisor graph."""
-
+"""Domain agents composed by the root coordinator graph."""

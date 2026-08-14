@@ -13,11 +13,11 @@ class AgentArchitectureTests(unittest.TestCase):
             results = state.get("agent_results") or [state.get("agent_result") or {}]
             return AIMessage(
                 content=results[-1].get("summary", ""),
-                name="main_agent",
+                name="coordinator",
             )
 
         synthesis_patch = patch(
-            "app.agents.supervisor.nodes.synthesize_agent_results",
+            "app.agents.coordinator.publishing.synthesize_agent_results",
             side_effect=fake_synthesis,
         )
         synthesis_patch.start()
@@ -49,10 +49,10 @@ class AgentArchitectureTests(unittest.TestCase):
 
         self.assertEqual(first["workflow_agent"], "travel")
         self.assertEqual(first["workflow_status"], "active")
-        self.assertEqual(first["state_schema_version"], 4)
+        self.assertEqual(first["state_schema_version"], 5)
         self.assertEqual(first["orchestration_phase"], "done")
         self.assertIsNone(first["pending_agent_call"])
-        self.assertEqual(first["messages"][-1].name, "main_agent")
+        self.assertEqual(first["messages"][-1].name, "coordinator")
         self.assertEqual(first["route_decision"]["agent"], "travel")
         self.assertEqual(first["agent_result"]["agent"], "travel")
         self.assertEqual(first["agent_result"]["status"], "active")
@@ -64,21 +64,21 @@ class AgentArchitectureTests(unittest.TestCase):
         self.assertIn("返程日期", reply)
         self.assertNotIn("目的地、", reply)
 
-    def test_root_graph_loops_from_child_back_to_main_agent(self):
+    def test_root_graph_loops_from_child_back_to_coordinator(self):
         graph = self._build_root_graph().get_graph()
         nodes = set(graph.nodes)
         edges = {(edge.source, edge.target) for edge in graph.edges}
 
-        self.assertIn("main_agent", nodes)
+        self.assertIn("coordinator", nodes)
         self.assertIn("agent_executor", nodes)
         self.assertIn("collect_agent_result", nodes)
         self.assertIn("travel_agent", nodes)
         self.assertNotIn("general_agent", nodes)
-        self.assertIn(("__start__", "main_agent"), edges)
-        self.assertIn(("main_agent", "agent_executor"), edges)
+        self.assertIn(("__start__", "coordinator"), edges)
+        self.assertIn(("coordinator", "agent_executor"), edges)
         self.assertIn(("agent_executor", "travel_agent"), edges)
         self.assertIn(("travel_agent", "collect_agent_result"), edges)
-        self.assertIn(("collect_agent_result", "main_agent"), edges)
+        self.assertIn(("collect_agent_result", "coordinator"), edges)
 
     def test_agent_registry_and_state_boundaries_are_explicit(self):
         from app.agents.contracts import RootState
@@ -86,8 +86,8 @@ class AgentArchitectureTests(unittest.TestCase):
         from app.agents.travel.state import TravelState
         from app.graph.router import list_domains
 
-        self.assertEqual(set(AGENT_SPECS), {"general", "travel"})
-        self.assertEqual(set(list_domains()), {"general", "travel"})
+        self.assertEqual(set(AGENT_SPECS), {"travel"})
+        self.assertEqual(set(list_domains()), {"travel"})
         root_fields = get_type_hints(RootState, include_extras=True)
         travel_fields = get_type_hints(TravelState, include_extras=True)
         self.assertIn("workflow_agent", root_fields)
@@ -129,7 +129,7 @@ class AgentArchitectureTests(unittest.TestCase):
         self.assertEqual(result["workflow_status"], "completed")
         self.assertEqual(result["agent_result"]["agent"], "travel")
         self.assertEqual(result["agent_result"]["status"], "completed")
-        self.assertEqual(result["messages"][-1].name, "main_agent")
+        self.assertEqual(result["messages"][-1].name, "coordinator")
         self.assertNotIn("travel_stage", result)
         self.assertNotIn("trip_request", result)
         self.assertIn("上海旅行方案", result["messages"][-1].content)
@@ -141,7 +141,7 @@ class AgentArchitectureTests(unittest.TestCase):
         graph = self._build_root_graph()
         config = {"configurable": {"thread_id": "travel-general-handoff"}}
         with (
-            patch("app.agents.supervisor.nodes.chatbot", fake_chatbot),
+            patch("app.agents.coordinator.general.chatbot", fake_chatbot),
             patch(
                 "app.agents.travel.nodes.extract_trip_patch",
                 side_effect=[{"destination": "上海"}, {"travelers": 2}],
@@ -166,7 +166,7 @@ class AgentArchitectureTests(unittest.TestCase):
         self.assertEqual(general["agent_result"]["summary"], "这是普通问题的回答。")
         self.assertEqual(general["workflow_agent"], "travel")
         self.assertEqual(general["workflow_status"], "active")
-        self.assertEqual(general["messages"][-1].name, "main_agent")
+        self.assertEqual(general["messages"][-1].name, "coordinator")
         self.assertIn("出发日期", resumed["messages"][-1].content)
         self.assertNotIn("目的地、", resumed["messages"][-1].content)
 

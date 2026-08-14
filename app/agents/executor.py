@@ -26,19 +26,19 @@ def agent_executor_node(state: RootState) -> dict:
             "agent_result": _failed_result(
                 "unknown",
                 code="MISSING_AGENT_CALL",
-                message="主 Agent 没有提供可执行的子 Agent 调用。",
+                message="Coordinator 没有提供可执行的领域 Agent 调用。",
             ),
             "next_action": "invalid",
             "agent_status": "failed",
         }
 
     agent = call.get("agent", "unknown")
-    if agent == "general" or agent not in AGENT_SPECS:
+    if agent not in AGENT_SPECS:
         return {
             "agent_result": _failed_result(
                 agent,
                 code="UNKNOWN_AGENT",
-                message=f"未注册可执行的子 Agent：{agent}",
+                message=f"未注册可执行的领域 Agent：{agent}",
             ),
             "next_action": "invalid",
             "agent_status": "failed",
@@ -69,7 +69,7 @@ def agent_failure_fallback(state: dict) -> dict:
         "agent_result": _failed_result(
             agent,
             code="AGENT_EXECUTION_FAILED",
-            message=f"{agent} Agent 执行失败，主 Agent 已接管本轮请求。",
+            message=f"{agent} Agent 执行失败，Coordinator 已接管本轮请求。",
         ),
         "agent_status": "failed",
         "handoff": None,
@@ -81,7 +81,7 @@ def agent_failure_fallback(state: dict) -> dict:
 
 
 def collect_agent_result_node(state: RootState) -> dict:
-    """Normalize a child result before returning control to the main agent."""
+    """Normalize a domain result before returning control to the coordinator."""
     call = state.get("pending_agent_call") or {}
     agent = str(call.get("agent") or state.get("route") or "unknown")
     raw_result = state.get("agent_result")
@@ -105,11 +105,11 @@ def collect_agent_result_node(state: RootState) -> dict:
         result["call_id"] = str(call_id)
 
     return {
-        "active_agent": "main",
+        "active_agent": "coordinator",
         "last_agent": agent,
         "agent_status": result.get("status", "completed"),
         "agent_result": result,
         "agent_results": [*(state.get("agent_results") or []), result],
         "orchestration_phase": "synthesizing",
-        "next_action": "main_agent",
+        "next_action": "coordinator",
     }

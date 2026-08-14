@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.agents.contracts import AgentSpec, RouteDecision
-from app.agents.supervisor.nodes import supervisor_node
+from app.agents.coordinator.routing import route_request_node
 
 
 def _spec(name: str, score: int, priority: int) -> AgentSpec:
@@ -20,49 +20,45 @@ def _spec(name: str, score: int, priority: int) -> AgentSpec:
     )
 
 
-class SupervisorRoutingTests(unittest.TestCase):
+class CoordinatorRoutingTests(unittest.TestCase):
     def test_score_wins_before_priority(self):
         specs = {
-            "general": AgentSpec("general", "general", lambda: None),
             "alpha": _spec("alpha", 80, 100),
             "beta": _spec("beta", 90, 0),
         }
-        with patch("app.agents.supervisor.nodes.AGENT_SPECS", specs):
-            result = supervisor_node({"messages": []})
+        with patch("app.agents.coordinator.routing.AGENT_SPECS", specs):
+            result = route_request_node({"messages": []})
 
         self.assertEqual(result["route"], "beta")
         self.assertEqual(result["route_decision"]["score"], 90)
 
     def test_priority_breaks_equal_score(self):
         specs = {
-            "general": AgentSpec("general", "general", lambda: None),
             "alpha": _spec("alpha", 80, 100),
             "beta": _spec("beta", 80, 50),
         }
-        with patch("app.agents.supervisor.nodes.AGENT_SPECS", specs):
-            result = supervisor_node({"messages": []})
+        with patch("app.agents.coordinator.routing.AGENT_SPECS", specs):
+            result = route_request_node({"messages": []})
 
         self.assertEqual(result["route"], "alpha")
 
     def test_exact_tie_falls_back_to_general(self):
         specs = {
-            "general": AgentSpec("general", "general", lambda: None),
             "alpha": _spec("alpha", 80, 100),
             "beta": _spec("beta", 80, 100),
         }
-        with patch("app.agents.supervisor.nodes.AGENT_SPECS", specs):
-            result = supervisor_node({"messages": []})
+        with patch("app.agents.coordinator.routing.AGENT_SPECS", specs):
+            result = route_request_node({"messages": []})
 
         self.assertEqual(result["route"], "general")
         self.assertTrue(result["route_decision"]["ambiguous"])
 
     def test_low_score_falls_back_to_general(self):
         specs = {
-            "general": AgentSpec("general", "general", lambda: None),
             "alpha": _spec("alpha", 50, 100),
         }
-        with patch("app.agents.supervisor.nodes.AGENT_SPECS", specs):
-            result = supervisor_node({"messages": []})
+        with patch("app.agents.coordinator.routing.AGENT_SPECS", specs):
+            result = route_request_node({"messages": []})
 
         self.assertEqual(result["route"], "general")
 
@@ -71,7 +67,6 @@ class SupervisorRoutingTests(unittest.TestCase):
             raise RuntimeError("broken")
 
         specs = {
-            "general": AgentSpec("general", "general", lambda: None),
             "broken": AgentSpec(
                 "broken",
                 "broken",
@@ -80,8 +75,8 @@ class SupervisorRoutingTests(unittest.TestCase):
                 priority=100,
             ),
         }
-        with patch("app.agents.supervisor.nodes.AGENT_SPECS", specs):
-            result = supervisor_node({"messages": []})
+        with patch("app.agents.coordinator.routing.AGENT_SPECS", specs):
+            result = route_request_node({"messages": []})
 
         self.assertEqual(result["route"], "general")
         self.assertEqual(
@@ -95,7 +90,6 @@ class SupervisorRoutingTests(unittest.TestCase):
 
     def test_explicit_agent_beats_active_workflow_continuation(self):
         specs = {
-            "general": AgentSpec("general", "general", lambda: None),
             "travel": AgentSpec(
                 "travel",
                 "travel",
@@ -111,14 +105,13 @@ class SupervisorRoutingTests(unittest.TestCase):
             ),
             "analytics": _spec("analytics", 90, 100),
         }
-        with patch("app.agents.supervisor.nodes.AGENT_SPECS", specs):
-            result = supervisor_node({"messages": []})
+        with patch("app.agents.coordinator.routing.AGENT_SPECS", specs):
+            result = route_request_node({"messages": []})
 
         self.assertEqual(result["route"], "analytics")
 
     def test_continuation_is_used_without_explicit_domain_match(self):
         specs = {
-            "general": AgentSpec("general", "general", lambda: None),
             "travel": AgentSpec(
                 "travel",
                 "travel",
@@ -133,8 +126,8 @@ class SupervisorRoutingTests(unittest.TestCase):
                 priority=100,
             ),
         }
-        with patch("app.agents.supervisor.nodes.AGENT_SPECS", specs):
-            result = supervisor_node({"messages": []})
+        with patch("app.agents.coordinator.routing.AGENT_SPECS", specs):
+            result = route_request_node({"messages": []})
 
         self.assertEqual(result["route"], "travel")
 

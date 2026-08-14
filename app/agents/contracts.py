@@ -7,11 +7,11 @@ from typing_extensions import NotRequired, TypedDict
 
 AgentName = str
 WorkflowStatus = Literal["active", "completed", "cancelled"]
-CURRENT_STATE_SCHEMA_VERSION = 4
+CURRENT_STATE_SCHEMA_VERSION = 5
 
 
 class AgentCall(TypedDict):
-    """A main-agent-owned request to execute one registered domain agent."""
+    """A coordinator-owned request to execute one registered domain agent."""
 
     call_id: str
     agent: AgentName
@@ -58,7 +58,7 @@ class AgentCoordinationState(TypedDict, total=False):
 
 
 class RootState(AgentCoordinationState):
-    """Domain-agnostic state owned by the main agent."""
+    """Domain-agnostic state owned by the coordinator."""
 
 
 @dataclass(frozen=True)

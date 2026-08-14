@@ -271,7 +271,7 @@ async def stream_chat(
             if event.get("event") != "on_chat_model_stream":
                 continue
             if event.get("metadata", {}).get("langgraph_node") not in {
-                "main_agent",
+                "coordinator",
                 "chatbot",  # Compatibility with lightweight test/fake graphs.
             }:
                 continue

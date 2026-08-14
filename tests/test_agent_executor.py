@@ -12,7 +12,7 @@ from app.agents.executor import (
     agent_failure_fallback,
     collect_agent_result_node,
 )
-from app.agents.supervisor.nodes import main_agent_node, synthesize_agent_results
+from app.agents.coordinator import coordinator_node, synthesize_agent_results
 
 
 class AgentExecutorTests(unittest.TestCase):
@@ -109,7 +109,7 @@ class AgentExecutorTests(unittest.TestCase):
             }],
         }
 
-        with patch("app.agents.supervisor.nodes.get_llm", return_value=model):
+        with patch("app.agents.coordinator.publishing.get_llm", return_value=model):
             response = synthesize_agent_results(state)
 
         prompt = model.messages[-1].content
@@ -139,10 +139,10 @@ class AgentExecutorTests(unittest.TestCase):
         }
 
         with patch(
-            "app.agents.supervisor.nodes.synthesize_agent_results",
+            "app.agents.coordinator.publishing.synthesize_agent_results",
             side_effect=RuntimeError("model unavailable"),
         ):
-            result = main_agent_node(state)
+            result = coordinator_node(state)
 
         content = result["messages"][-1].content
         self.assertIn("只能提供部分方案", content)
@@ -163,11 +163,10 @@ class AgentExecutorTests(unittest.TestCase):
         def fake_synthesis(state):
             return AIMessage(
                 content=state["agent_results"][-1]["summary"],
-                name="main_agent",
+                name="coordinator",
             )
 
         specs = {
-            "general": AgentSpec("general", "general", lambda: None),
             "broken": AgentSpec(
                 "broken",
                 "broken",
@@ -182,10 +181,10 @@ class AgentExecutorTests(unittest.TestCase):
             patch("app.graph.builder.build_registered_agents", return_value={
                 "broken": RunnableLambda(broken_agent),
             }),
-            patch("app.agents.supervisor.nodes.AGENT_SPECS", specs),
+            patch("app.agents.coordinator.routing.AGENT_SPECS", specs),
             patch("app.agents.executor.AGENT_SPECS", specs),
             patch(
-                "app.agents.supervisor.nodes.synthesize_agent_results",
+                "app.agents.coordinator.publishing.synthesize_agent_results",
                 side_effect=fake_synthesis,
             ),
         ):
@@ -200,7 +199,7 @@ class AgentExecutorTests(unittest.TestCase):
             result["agent_result"]["errors"][0]["code"],
             "AGENT_EXECUTION_FAILED",
         )
-        self.assertEqual(result["messages"][-1].name, "main_agent")
+        self.assertEqual(result["messages"][-1].name, "coordinator")
 
 
 if __name__ == "__main__":

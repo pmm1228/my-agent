@@ -10,22 +10,22 @@ from app.agents.executor import (
     route_from_agent_executor,
 )
 from app.agents.registry import build_registered_agents
-from app.agents.supervisor import (
-    main_agent_node,
-    route_from_main_agent,
+from app.agents.coordinator import (
+    coordinator_node,
+    route_from_coordinator,
 )
 from app.core.checkpointer import get_checkpointer
 from app.graph.web_confirmation import tools_with_web_confirmation
 
 
 def build_graph(checkpointer=None):
-    """Compose main-agent → domain-agent → main-agent orchestration."""
+    """Compose coordinator -> domain-agent -> coordinator orchestration."""
     if checkpointer is None:
         checkpointer = get_checkpointer()
 
-    agents = build_registered_agents(include_general=False)
+    agents = build_registered_agents()
     builder = StateGraph(RootState)
-    builder.add_node("main_agent", main_agent_node)
+    builder.add_node("coordinator", coordinator_node)
     builder.add_node("agent_executor", agent_executor_node)
     builder.add_node("collect_agent_result", collect_agent_result_node)
     builder.add_node("tools", tools_with_web_confirmation)
@@ -36,10 +36,10 @@ def build_graph(checkpointer=None):
         )
         builder.add_node(f"{name}_agent", safe_agent_graph)
 
-    builder.add_edge(START, "main_agent")
+    builder.add_edge(START, "coordinator")
     builder.add_conditional_edges(
-        "main_agent",
-        route_from_main_agent,
+        "coordinator",
+        route_from_coordinator,
         {
             "execute_agent": "agent_executor",
             "tools": "tools",
@@ -54,10 +54,10 @@ def build_graph(checkpointer=None):
             "invalid": "collect_agent_result",
         },
     )
-    builder.add_edge("tools", "main_agent")
+    builder.add_edge("tools", "coordinator")
     for name in agents:
         builder.add_edge(f"{name}_agent", "collect_agent_result")
-    builder.add_edge("collect_agent_result", "main_agent")
+    builder.add_edge("collect_agent_result", "coordinator")
     return builder.compile(checkpointer=checkpointer)
 
 

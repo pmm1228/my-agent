@@ -1,16 +1,9 @@
 from app.agents.contracts import AgentSpec
-from app.agents.general.graph import build_general_graph
 from app.agents.travel.graph import build_travel_graph
 from app.agents.travel.routing import route_travel_request
 
 
-AGENT_SPECS = {
-    "general": AgentSpec(
-        name="general",
-        description="普通问答以及通用工具调用",
-        graph_factory=build_general_graph,
-        priority=0,
-    ),
+DOMAIN_AGENT_SPECS = {
     "travel": AgentSpec(
         name="travel",
         description="多轮旅行规划、联网研究、天气、预算和行程修改",
@@ -20,10 +13,11 @@ AGENT_SPECS = {
     ),
 }
 
+AGENT_SPECS = DOMAIN_AGENT_SPECS
 
-def build_registered_agents(*, include_general: bool = True) -> dict:
+
+def build_registered_agents() -> dict:
     return {
         name: spec.graph_factory()
         for name, spec in AGENT_SPECS.items()
-        if include_general or name != "general"
     }

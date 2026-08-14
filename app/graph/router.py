@@ -1,4 +1,4 @@
-"""Compatibility helpers for discovering main-agent domains."""
+"""Helpers for discovering registered domain agents."""
 
 from app.agents.registry import AGENT_SPECS
 
